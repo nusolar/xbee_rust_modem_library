@@ -1,14 +1,32 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use std::{
+    io::{Read, Result, Write},
+    time::Duration,
+};
+
+use serialport::{DataBits, SerialPort, StopBits};
+
+pub struct XBeeDevice {
+    port: Box<dyn SerialPort>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl XBeeDevice {
+    pub fn new(port: String, baud: u32, stop_bits: StopBits, data_bits: DataBits) -> Result<Self> {
+        let port = serialport::new(port, baud)
+            .stop_bits(stop_bits)
+            .data_bits(data_bits)
+            .timeout(Duration::from_millis(10))
+            .open()?;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+        Ok(Self { port })
+    }
+
+    pub fn send(&mut self, data: &[u8]) -> Result<()> {
+        self.port.write_all(data)?;
+        self.port.flush()?;
+        Ok(())
+    }
+
+    pub fn receive(&mut self, buffer: &mut [u8]) -> Result<usize> {
+        self.port.read(buffer)
     }
 }
