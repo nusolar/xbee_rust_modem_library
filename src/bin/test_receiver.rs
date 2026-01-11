@@ -1,9 +1,9 @@
-use serialport::{DataBits, FlowControl, Parity, StopBits};
+use serialport::{DataBits, FlowControl, Parity, StopBits, available_ports};
 use std::io::{self, Write};
 use xbee_rust_modem_library::XBeeDevice;
 
 pub fn main() {
-    let port = "COM5";
+    let port = &available_ports().unwrap()[0].port_name;
     let baud_rate = 9600;
     let stop_bits = StopBits::One;
     let data_bits = DataBits::Eight;
