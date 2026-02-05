@@ -1,12 +1,14 @@
 use serialport::{DataBits, FlowControl, Parity, StopBits, available_ports, SerialPortType};
 use std::io::{self, Write};
-use xbee_rust_modem_library::XBeeDevice;
+use xbee_rust_modem_library::{XBeeDevice, Packet, serialize_packet, deserialize_packet};
+use heapless::Vec;
 
 fn find_xbee_port() -> Option<String> {
     if let Ok(ports) = available_ports() {
         for p in ports {
             if let SerialPortType::UsbPort(info) = &p.port_type {
-                if (info.vid == 0x0403 || info.vid == 0x10C4) {
+
+                if info.vid == 0x0403 || info.vid == 0x10C4 {
                     return Some(p.port_name.clone());
                 }
             }
@@ -29,8 +31,13 @@ pub fn main() {
     loop {
         match receiver.receive(buf.as_mut_slice()) {
             Ok(t) => {
-                io::stdout().write_all(&buf[..t]).unwrap();
-                io::stdout().flush().unwrap();
+                let packet_slice = &mut buf[..t];
+                match deserialize_packet(packet_slice) {
+                    Ok(packet) => {
+                        println!("Received packet: {:?}", packet);
+                    }
+                    Err(e) => eprintln!("Failed to deserialize packet: {:?}", e),
+                }
             }
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
             Err(e) => eprintln!("{:?}", e),

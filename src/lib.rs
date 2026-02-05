@@ -3,6 +3,9 @@ use std::{
     time::Duration,
 };
 
+pub mod packet; 
+pub use packet::{Packet, serialize_packet, deserialize_packet};
+
 use serialport::{DataBits, SerialPort, StopBits};
 
 pub struct XBeeDevice {
