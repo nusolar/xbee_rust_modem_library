@@ -1,6 +1,7 @@
 use serialport::{DataBits, FlowControl, Parity, StopBits, available_ports, SerialPortType};
 use std::io::{self, Write};
-use xbee_rust_modem_library::XBeeDevice;
+use xbee_rust_modem_library::{XBeeDevice, Packet, serialize_packet, deserialize_packet};
+use heapless::Vec;
 
 fn find_xbee_port() -> Option<String> {
     if let Ok(ports) = available_ports() {
@@ -43,8 +44,17 @@ pub fn main() {
     // Remove trailing newline
     let message = input.trim();
 
+    let original_packet = Packet {
+        id: 42,
+        payload: Vec::from_slice(message.as_bytes()).unwrap(),
+    };
+
+    let mut buffer = [0u8; 512];
+    let serialized_packet = serialize_packet(&original_packet, &mut buffer)
+        .expect("Failed to serialize packet");
+
     loop {
-        match sender.send(message.as_bytes()) {
+        match sender.send(serialized_packet) {
             Ok(_) => {
                 println!("Sent!");
                 return;
