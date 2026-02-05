@@ -6,14 +6,12 @@ use heapless::Vec;
 fn find_xbee_port() -> Option<String> {
     if let Ok(ports) = available_ports() {
         for p in ports {
-            
             if let SerialPortType::UsbPort(info) = &p.port_type {
 
                 if info.vid == 0x0403 || info.vid == 0x10C4 {
                     return Some(p.port_name.clone());
                 }
             }
-            
         }
     }
     None
