@@ -16,6 +16,7 @@ pub fn deserialize_packet<'a>(s_packet: &'a mut [u8]) -> Result<Packet, postcard
 where
     Packet: serde::Deserialize<'a>,
 {
+    println!("got packet {:?}", s_packet);
     postcard::from_bytes_cobs(s_packet)
 }
 /*

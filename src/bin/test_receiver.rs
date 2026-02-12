@@ -34,7 +34,10 @@ pub fn main() {
                 let packet_slice = &mut buf[..t];
                 match deserialize_packet(packet_slice) {
                     Ok(packet) => {
-                        println!("Received packet: {:?}", packet);
+                        match std::str::from_utf8(&packet.payload) {
+                            Ok(text) => println!("received: {}", text),
+                            Err(_) => println!("not valid utf8")
+                        }
                     }
                     Err(e) => eprintln!("Failed to deserialize packet: {:?}", e),
                 }
