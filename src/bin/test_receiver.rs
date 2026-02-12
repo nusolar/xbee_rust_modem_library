@@ -1,27 +1,16 @@
-use serialport::{DataBits, FlowControl, Parity, StopBits, available_ports, SerialPortType};
+use serialport::{DataBits, StopBits};
 use std::io::{self, Write};
-use xbee_rust_modem_library::XBeeDevice;
-
-fn find_xbee_port() -> Option<String> {
-    if let Ok(ports) = available_ports() {
-        for p in ports {
-            if let SerialPortType::UsbPort(info) = &p.port_type {
-                if (info.vid == 0x0403 || info.vid == 0x10C4) {
-                    return Some(p.port_name.clone());
-                }
-            }
-        }
-    }
-    None
-}
+use xbee_rust_modem_library::{XBeeDevice, discover_xbee_ports};
 
 pub fn main() {
-    let port_name = find_xbee_port().expect("No XBee device found.");
+    let ports = discover_xbee_ports();
+    let port_name = ports.first().cloned().expect(
+        "No XBee device found. Check USB connection and permissions.",
+    );
+    println!("Receiver using port: {}", port_name);
     let baud_rate = 9600;
     let stop_bits = StopBits::One;
     let data_bits = DataBits::Eight;
-    let flow_control = FlowControl::None;
-    let parity = Parity::None;
 
     let mut receiver = XBeeDevice::new(port_name, baud_rate, stop_bits, data_bits).unwrap();
 
