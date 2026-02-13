@@ -64,6 +64,31 @@ pub fn discover_xbee_ports() -> Vec<String> {
     adapters.into_values().collect()
 }
 
+pub fn encode_cobs_frame(payload: &[u8]) -> Vec<u8> {
+    let mut framed = cobs::encode_vec(payload);
+    framed.push(0x00);
+    framed
+}
+
+pub fn drain_cobs_frames(rx_buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+
+    while let Some(delimiter_pos) = rx_buffer.iter().position(|b| *b == 0x00) {
+        let encoded: Vec<u8> = rx_buffer.drain(..delimiter_pos).collect();
+        rx_buffer.drain(..1);
+
+        if encoded.is_empty() {
+            continue;
+        }
+
+        if let Ok(decoded) = cobs::decode_vec(&encoded) {
+            frames.push(decoded);
+        }
+    }
+
+    frames
+}
+
 fn normalize_port_key(port_name: &str) -> String {
     if let Some(stripped) = port_name.strip_prefix("/dev/cu.") {
         return stripped.to_string();

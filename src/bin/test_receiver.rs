@@ -1,6 +1,6 @@
 use serialport::{DataBits, StopBits};
 use std::io::{self, Write};
-use xbee_rust_modem_library::{XBeeDevice, discover_xbee_ports};
+use xbee_rust_modem_library::{XBeeDevice, discover_xbee_ports, drain_cobs_frames};
 
 pub fn main() {
     let ports = discover_xbee_ports();
@@ -8,18 +8,21 @@ pub fn main() {
         "No XBee device found. Check USB connection and permissions.",
     );
     println!("Receiver using port: {}", port_name);
-    let baud_rate = 9600;
-    let stop_bits = StopBits::One;
-    let data_bits = DataBits::Eight;
 
-    let mut receiver = XBeeDevice::new(port_name, baud_rate, stop_bits, data_bits).unwrap();
+    let mut receiver = XBeeDevice::new(port_name, 9600, StopBits::One, DataBits::Eight).unwrap();
+    let mut chunk_buffer = vec![0; 512];
+    let mut rx_buffer: Vec<u8> = Vec::new();
 
-    let mut buf = vec![0; 1000];
     loop {
-        match receiver.receive(buf.as_mut_slice()) {
+        match receiver.receive(chunk_buffer.as_mut_slice()) {
             Ok(t) => {
-                io::stdout().write_all(&buf[..t]).unwrap();
-                io::stdout().flush().unwrap();
+                rx_buffer.extend_from_slice(&chunk_buffer[..t]);
+
+                for frame in drain_cobs_frames(&mut rx_buffer) {
+                    io::stdout().write_all(&frame).unwrap();
+                    io::stdout().write_all(b"\n").unwrap();
+                    io::stdout().flush().unwrap();
+                }
             }
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
             Err(e) => eprintln!("{:?}", e),

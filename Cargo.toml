@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 serialport = "4.8.1"
+cobs = "0.2"
