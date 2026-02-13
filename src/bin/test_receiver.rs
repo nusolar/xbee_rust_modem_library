@@ -1,6 +1,6 @@
 use serialport::{DataBits, StopBits};
 use std::io::{self, Write};
-use xbee_rust_modem_library::{XBeeDevice, discover_xbee_ports, drain_cobs_frames};
+use xbee_rust_modem_library::{XBeeDevice, deserialize_packet, discover_xbee_ports};
 
 pub fn main() {
     let ports = discover_xbee_ports();
@@ -18,10 +18,16 @@ pub fn main() {
             Ok(t) => {
                 rx_buffer.extend_from_slice(&chunk_buffer[..t]);
 
-                for frame in drain_cobs_frames(&mut rx_buffer) {
-                    io::stdout().write_all(&frame).unwrap();
-                    io::stdout().write_all(b"\n").unwrap();
-                    io::stdout().flush().unwrap();
+                while let Some(delimiter_pos) = rx_buffer.iter().position(|b| *b == 0x00) {
+                    let mut frame: Vec<u8> = rx_buffer.drain(..=delimiter_pos).collect();
+                    match deserialize_packet(frame.as_mut_slice()) {
+                        Ok(packet) => {
+                            io::stdout().write_all(&packet.payload).unwrap();
+                            io::stdout().write_all(b"\n").unwrap();
+                            io::stdout().flush().unwrap();
+                        }
+                        Err(e) => eprintln!("Failed to decode packet: {:?}", e),
+                    }
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),

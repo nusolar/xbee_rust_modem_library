@@ -2,9 +2,10 @@ use serialport::{DataBits, StopBits};
 use std::io::{self, Write};
 use std::thread;
 use std::time::Duration;
-use xbee_rust_modem_library::{XBeeDevice, discover_xbee_ports, encode_cobs_frame};
+use xbee_rust_modem_library::{Packet, XBeeDevice, discover_xbee_ports, serialize_packet};
+use heapless::Vec as HeaplessVec;
 
-const FINAL_TX_DRAIN_MS: u64 = 1000;
+const SEND_SETTLE_MS: u64 = 50;
 
 pub fn main() {
     let ports = discover_xbee_ports();
@@ -19,17 +20,34 @@ pub fn main() {
 
     let mut sender = XBeeDevice::new(port_name, 9600, StopBits::One, DataBits::Eight).unwrap();
 
-    print!("Enter message to send: ");
-    io::stdout().flush().unwrap();
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read input");
+    let mut packet_id = 0u32;
+    loop {
+        print!("Enter message to send (or 'quit'): ");
+        io::stdout().flush().unwrap();
 
-    let payload = input.trim().as_bytes().to_vec();
-    let framed = encode_cobs_frame(&payload);
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read input");
+        let message = input.trim_end_matches(['\n', '\r']);
+        if message == "quit" {
+            return;
+        }
 
-    sender.send(&framed).unwrap();
-    thread::sleep(Duration::from_millis(FINAL_TX_DRAIN_MS));
-    println!("Sent {} payload bytes as {} framed bytes.", payload.len(), framed.len());
+        let Ok(payload) = HeaplessVec::<u8, 256>::from_slice(message.as_bytes()) else {
+            eprintln!("Message too long. Max payload is 256 bytes.");
+            continue;
+        };
+
+        let packet = Packet {
+            id: packet_id,
+            payload,
+        };
+        let mut frame_buffer = [0u8; 512];
+        let framed = serialize_packet(&packet, &mut frame_buffer).unwrap();
+        sender.send(framed).unwrap();
+        thread::sleep(Duration::from_millis(SEND_SETTLE_MS));
+        println!("Sent packet id={} ({} payload bytes).", packet_id, message.len());
+        packet_id = packet_id.wrapping_add(1);
+    }
 }
