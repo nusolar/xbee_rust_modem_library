@@ -1,56 +1,53 @@
-use serialport::{DataBits, FlowControl, Parity, StopBits, available_ports, SerialPortType};
+use serialport::{DataBits, StopBits};
 use std::io::{self, Write};
-use xbee_rust_modem_library::XBeeDevice;
+use std::thread;
+use std::time::Duration;
+use xbee_rust_modem_library::{Packet, XBeeDevice, discover_xbee_ports, serialize_packet};
+use heapless::Vec as HeaplessVec;
 
-fn find_xbee_port() -> Option<String> {
-    if let Ok(ports) = available_ports() {
-        for p in ports {
-            if let SerialPortType::UsbPort(info) = &p.port_type {
-                if (info.vid == 0x0403 || info.vid == 0x10C4) {
-                    return Some(p.port_name.clone());
-                }
-            }   
-        }
-    }
-    None
-}
+const SEND_SETTLE_MS: u64 = 50;
 
 pub fn main() {
-    let port_name = find_xbee_port()
-        .expect("No XBee device found. Check USB connection and permissions.");
-    let baud_rate = 9600;
-    let stop_bits = StopBits::One;
-    let data_bits = DataBits::Eight;
-    let flow_control = FlowControl::None;
-    let parity = Parity::None;
+    let ports = discover_xbee_ports();
+    let port_name = if ports.len() > 1 {
+        ports[1].clone()
+    } else if let Some(port) = ports.first() {
+        port.clone()
+    } else {
+        panic!("No XBee device found. Check USB connection and permissions.");
+    };
+    println!("Sender using port: {}", port_name);
 
-    let mut sender = XBeeDevice::new(
-        port_name, baud_rate, stop_bits, data_bits).unwrap();
+    let mut sender = XBeeDevice::new(port_name, 9600, StopBits::One, DataBits::Eight).unwrap();
 
-    // Prompt user
-    print!("Enter message to send: ");
-    io::stdout().flush().unwrap();
-
-    // Read input
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read input");
-
-    // Remove trailing newline
-    let message = input.trim();
-
+    let mut packet_id = 0u32;
     loop {
-        match sender.send(message.as_bytes()) {
-            Ok(_) => {
-                println!("Sent!");
-                return;
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
-            Err(e) => {
-                eprintln!("{:?}", e);
-                return;
-            }
+        print!("Enter message to send (or 'quit'): ");
+        io::stdout().flush().unwrap();
+
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read input");
+        let message = input.trim_end_matches(['\n', '\r']);
+        if message == "quit" {
+            return;
         }
+
+        let Ok(payload) = HeaplessVec::<u8, 256>::from_slice(message.as_bytes()) else {
+            eprintln!("Message too long. Max payload is 256 bytes.");
+            continue;
+        };
+
+        let packet = Packet {
+            id: packet_id,
+            payload,
+        };
+        let mut frame_buffer = [0u8; 512];
+        let framed = serialize_packet(&packet, &mut frame_buffer).unwrap();
+        sender.send(framed).unwrap();
+        thread::sleep(Duration::from_millis(SEND_SETTLE_MS));
+        println!("Sent packet id={} ({} payload bytes).", packet_id, message.len());
+        packet_id = packet_id.wrapping_add(1);
     }
 }
