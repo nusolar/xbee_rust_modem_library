@@ -97,9 +97,16 @@ fn main() {
                     };
 
                     // Replay protection first: cheap check before decryption
-                    if !replay.accept(frame.seq) {
-                        stats.replay_drop += 1;
-                        continue;
+                    match inorder.decide_and_update(frame.seq) {
+                        InOrderDecision::Accept => { /* continue to decrypt */ }
+                        InOrderDecision::DropOldOrDuplicate => {
+                            stats.replay_drop += 1; // or a separate counter
+                            continue;
+                        }
+                        InOrderDecision::DropOutOfOrderAhead => {
+                            stats.out_of_order_drop += 1; // add this stat if you want
+                            continue;
+                        }
                     }
 
                     // Decrypt/authenticate

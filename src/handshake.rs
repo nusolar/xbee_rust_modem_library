@@ -7,9 +7,10 @@
 //!
 //! The result is a per-run session key. That makes nonce/seq management MUCH easier.
 
-use aes_gcm::Key;
+use aes_gcm::{Aes256Gcm, Key};
 use ed25519_dalek::{Signature, Signer, Verifier, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey};
@@ -21,13 +22,13 @@ pub enum HandshakeMsg {
     ClientHello {
         client_identity_pub: [u8; 32], // Ed25519 public key
         client_eph_pub: [u8; 32],      // X25519 public key
-        sig: [u8; 64],                 // Ed25519 signature over transcript
+        sig: Vec<u8>,                  // 64 bytes: Ed25519 signature
     },
     /// Sent by the responder (receiver)
     ServerHello {
         server_identity_pub: [u8; 32],
         server_eph_pub: [u8; 32],
-        sig: [u8; 64],
+        sig: Vec<u8>, // 64 bytes
     },
 }
 
@@ -35,22 +36,35 @@ pub enum HandshakeMsg {
 const CLIENT_LABEL: &[u8] = b"XBeeSecure/ClientHello/v1";
 const SERVER_LABEL: &[u8] = b"XBeeSecure/ServerHello/v1";
 
-fn sign_client(sk: &SigningKey, client_id_pub: [u8; 32], client_eph_pub: [u8; 32]) -> [u8; 64] {
+fn sign_client(sk: &SigningKey, client_id_pub: [u8; 32], client_eph_pub: [u8; 32]) -> Vec<u8> {
     // Sign(label || client_id_pub || client_eph_pub)
     let mut msg = Vec::with_capacity(CLIENT_LABEL.len() + 32 + 32);
     msg.extend_from_slice(CLIENT_LABEL);
     msg.extend_from_slice(&client_id_pub);
     msg.extend_from_slice(&client_eph_pub);
-    sk.sign(&msg).to_bytes()
+
+    sk.sign(&msg).to_bytes().to_vec()
 }
 
-fn verify_client(pk: &VerifyingKey, client_id_pub: [u8; 32], client_eph_pub: [u8; 32], sig: [u8; 64]) -> bool {
+fn verify_client(
+    pk: &VerifyingKey,
+    client_id_pub: [u8; 32],
+    client_eph_pub: [u8; 32],
+    sig: &[u8],
+) -> bool {
+    if sig.len() != 64 {
+        return false;
+    }
+    let Ok(sig_arr) = <[u8; 64]>::try_from(sig) else {
+        return false;
+    };
+    let sig = Signature::from_bytes(&sig_arr);
+
     let mut msg = Vec::with_capacity(CLIENT_LABEL.len() + 32 + 32);
     msg.extend_from_slice(CLIENT_LABEL);
     msg.extend_from_slice(&client_id_pub);
     msg.extend_from_slice(&client_eph_pub);
 
-    let sig = Signature::from_bytes(&sig);
     pk.verify(&msg, &sig).is_ok()
 }
 
@@ -58,10 +72,10 @@ fn sign_server(
     sk: &SigningKey,
     server_id_pub: [u8; 32],
     server_eph_pub: [u8; 32],
-    // bind to client's values too, so the server signature is tied to this exact session
+    // Bind to client's values too, so server signature is tied to this exact session
     client_id_pub: [u8; 32],
     client_eph_pub: [u8; 32],
-) -> [u8; 64] {
+) -> Vec<u8> {
     // Sign(label || server_id_pub || server_eph_pub || client_id_pub || client_eph_pub)
     let mut msg = Vec::with_capacity(SERVER_LABEL.len() + 32 + 32 + 32 + 32);
     msg.extend_from_slice(SERVER_LABEL);
@@ -69,7 +83,8 @@ fn sign_server(
     msg.extend_from_slice(&server_eph_pub);
     msg.extend_from_slice(&client_id_pub);
     msg.extend_from_slice(&client_eph_pub);
-    sk.sign(&msg).to_bytes()
+
+    sk.sign(&msg).to_bytes().to_vec()
 }
 
 fn verify_server(
@@ -78,8 +93,16 @@ fn verify_server(
     server_eph_pub: [u8; 32],
     client_id_pub: [u8; 32],
     client_eph_pub: [u8; 32],
-    sig: [u8; 64],
+    sig: &[u8],
 ) -> bool {
+    if sig.len() != 64 {
+        return false;
+    }
+    let Ok(sig_arr) = <[u8; 64]>::try_from(sig) else {
+        return false;
+    };
+    let sig = Signature::from_bytes(&sig_arr);
+
     let mut msg = Vec::with_capacity(SERVER_LABEL.len() + 32 + 32 + 32 + 32);
     msg.extend_from_slice(SERVER_LABEL);
     msg.extend_from_slice(&server_id_pub);
@@ -87,7 +110,6 @@ fn verify_server(
     msg.extend_from_slice(&client_id_pub);
     msg.extend_from_slice(&client_eph_pub);
 
-    let sig = Signature::from_bytes(&sig);
     pk.verify(&msg, &sig).is_ok()
 }
 
@@ -100,7 +122,7 @@ fn derive_aes_key(
     server_id_pub: [u8; 32],
     client_eph_pub: [u8; 32],
     server_eph_pub: [u8; 32],
-) -> Key<aes_gcm::Aes256Gcm> {
+) -> Key<Aes256Gcm> {
     // "salt" can be empty for HKDF, but transcript as "info" is essential
     let hk = Hkdf::<Sha256>::new(None, &shared_secret);
 
@@ -112,12 +134,13 @@ fn derive_aes_key(
 
     let mut out = [0u8; 32];
     hk.expand(&info, &mut out).expect("hkdf expand");
-    Key::<aes_gcm::Aes256Gcm>::from_slice(&out).clone()
+
+    *Key::<Aes256Gcm>::from_slice(&out)
 }
 
 /// Initiator side (your "sender") creates a ClientHello.
 pub fn make_client_hello(identity_sk: &SigningKey) -> (HandshakeMsg, EphemeralSecret, [u8; 32]) {
-    let mut rng = rand_core::OsRng;
+    let mut rng = OsRng;
 
     let client_eph_secret = EphemeralSecret::random_from_rng(&mut rng);
     let client_eph_pub = PublicKey::from(&client_eph_secret).to_bytes();
@@ -143,7 +166,12 @@ pub fn respond_server_hello(
     authorized_client: &VerifyingKey,
     client_msg: HandshakeMsg,
 ) -> Option<(HandshakeMsg, EphemeralSecret, [u8; 32], [u8; 32])> {
-    let HandshakeMsg::ClientHello { client_identity_pub, client_eph_pub, sig } = client_msg else {
+    let HandshakeMsg::ClientHello {
+        client_identity_pub,
+        client_eph_pub,
+        sig,
+    } = client_msg
+    else {
         return None;
     };
 
@@ -153,12 +181,12 @@ pub fn respond_server_hello(
         return None;
     }
 
-    if !verify_client(authorized_client, client_identity_pub, client_eph_pub, sig) {
+    if !verify_client(authorized_client, client_identity_pub, client_eph_pub, sig.as_slice()) {
         return None;
     }
 
     // Generate server ephemeral key
-    let mut rng = rand_core::OsRng;
+    let mut rng = OsRng;
     let server_eph_secret = EphemeralSecret::random_from_rng(&mut rng);
     let server_eph_pub = PublicKey::from(&server_eph_secret).to_bytes();
 
@@ -191,8 +219,13 @@ pub fn finish_client(
     client_id_pub: [u8; 32],
     client_eph_pub: [u8; 32],
     server_msg: HandshakeMsg,
-) -> Option<(Key<aes_gcm::Aes256Gcm>, [u8; 32])> {
-    let HandshakeMsg::ServerHello { server_identity_pub, server_eph_pub, sig } = server_msg else {
+) -> Option<(Key<Aes256Gcm>, [u8; 32])> {
+    let HandshakeMsg::ServerHello {
+        server_identity_pub,
+        server_eph_pub,
+        sig,
+    } = server_msg
+    else {
         return None;
     };
 
@@ -206,7 +239,7 @@ pub fn finish_client(
         server_eph_pub,
         client_id_pub,
         client_eph_pub,
-        sig,
+        sig.as_slice(),
     ) {
         return None;
     }
@@ -214,7 +247,13 @@ pub fn finish_client(
     let server_pub = PublicKey::from(server_eph_pub);
     let shared = client_eph_secret.diffie_hellman(&server_pub).to_bytes();
 
-    let key = derive_aes_key(shared, client_id_pub, server_identity_pub, client_eph_pub, server_eph_pub);
+    let key = derive_aes_key(
+        shared,
+        client_id_pub,
+        server_identity_pub,
+        client_eph_pub,
+        server_eph_pub,
+    );
     Some((key, server_identity_pub))
 }
 
@@ -225,7 +264,7 @@ pub fn finish_server(
     server_eph_pub: [u8; 32],
     client_id_pub: [u8; 32],
     client_eph_pub: [u8; 32],
-) -> Key<aes_gcm::Aes256Gcm> {
+) -> Key<Aes256Gcm> {
     let client_pub = PublicKey::from(client_eph_pub);
     let shared = server_eph_secret.diffie_hellman(&client_pub).to_bytes();
     derive_aes_key(shared, client_id_pub, server_id_pub, client_eph_pub, server_eph_pub)
