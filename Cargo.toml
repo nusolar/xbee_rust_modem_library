@@ -5,6 +5,18 @@ edition = "2024"
 
 [dependencies]
 serialport = "4.8.1"
+
+serde = { version = "1.0", features = ["derive"] }
+postcard = { version = "1.1", features = ["use-std"] }
 heapless = { version = "0.8", features = ["serde"] }
-serde = { version = "1.0", default-features = false, features = ["derive"] }
-postcard = "1.1"
+
+aes-gcm = { version = "0.10.3", features = ["heapless"] }
+hkdf = "0.12"
+sha2 = "0.10"
+
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["getrandom"] }
+
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+base64ct = { version = "1", features = ["std"] }
