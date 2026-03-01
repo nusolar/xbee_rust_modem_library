@@ -3,12 +3,14 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use xbee_secure::framing::{decode_cobs, encode_cobs};
-use xbee_secure::handshake::{finish_server, respond_server_hello, HandshakeMsg};
-use xbee_secure::keys::{load_ed25519_public_key, load_or_generate_ed25519_signing_key, sender_id_from_pubkey};
-use xbee_secure::replay::ReplayWindow;
-use xbee_secure::secure_packet::{open, SecureFrame};
-use xbee_secure::serial::{discover_xbee_ports, XBeeDevice};
+use xbee_rust_modem_library::framing::{decode_cobs, encode_cobs};
+use xbee_rust_modem_library::handshake::{finish_server, respond_server_hello, HandshakeMsg};
+use xbee_rust_modem_library::keys::{
+    load_ed25519_public_key, load_or_generate_ed25519_signing_key, sender_id_from_pubkey,
+};
+use xbee_rust_modem_library::replay::{InOrder, InOrderDecision};
+use xbee_rust_modem_library::secure_packet::{open, SecureFrame};
+use xbee_rust_modem_library::serial::{discover_xbee_ports, XBeeDevice};
 
 const BAUD: u32 = 9600;
 
@@ -16,14 +18,18 @@ const BAUD: u32 = 9600;
 struct RxStats {
     ok: u64,
     auth_fail: u64,
-    replay_drop: u64,
+    dup_or_old_drop: u64,
+    out_of_order_drop: u64,
     decode_fail: u64,
 }
 
 fn main() {
     // ---- Serial port selection ----
     let ports = discover_xbee_ports();
-    let port_name = ports.first().cloned().expect("No XBee device found.");
+    let port_name = ports
+        .first()
+        .cloned()
+        .expect("No XBee device found. Check USB connection and permissions.");
     println!("Receiver using port: {}", port_name);
 
     let mut dev = XBeeDevice::new(port_name, BAUD, StopBits::One, DataBits::Eight).unwrap();
@@ -48,9 +54,13 @@ fn main() {
         respond_server_hello(&receiver_sk, &authorized_sender, client_hello)
             .expect("ClientHello invalid or sender not authorized");
 
-    // We need our own server eph pub to finish on server side:
+    // Need our own server eph pub to finish on server side:
     let (server_id_pub, server_eph_pub) = match &server_hello {
-        HandshakeMsg::ServerHello { server_identity_pub, server_eph_pub, .. } => (*server_identity_pub, *server_eph_pub),
+        HandshakeMsg::ServerHello {
+            server_identity_pub,
+            server_eph_pub,
+            ..
+        } => (*server_identity_pub, *server_eph_pub),
         _ => unreachable!(),
     };
 
@@ -70,8 +80,8 @@ fn main() {
         receiver_id
     );
 
-    // ---- Receive loop: decrypt + replay-protect ----
-    let mut replay = ReplayWindow::default();
+    // ---- Receive loop: decode -> in-order gate -> decrypt/auth ----
+    let mut inorder = InOrder::default();
     let mut stats = RxStats::default();
     let mut last_print = Instant::now();
 
@@ -83,7 +93,6 @@ fn main() {
             Ok(n) if n > 0 => {
                 rx.extend_from_slice(&chunk[..n]);
 
-                // While there is at least one full COBS frame (0x00 delimited), decode it.
                 while let Some(pos) = rx.iter().position(|b| *b == 0x00) {
                     let mut frame_bytes: Vec<u8> = rx.drain(..=pos).collect();
 
@@ -96,15 +105,15 @@ fn main() {
                         }
                     };
 
-                    // Replay protection first: cheap check before decryption
+                    // Strict in-order gate BEFORE decrypt (cheap)
                     match inorder.decide_and_update(frame.seq) {
-                        InOrderDecision::Accept => { /* continue to decrypt */ }
+                        InOrderDecision::Accept => {}
                         InOrderDecision::DropOldOrDuplicate => {
-                            stats.replay_drop += 1; // or a separate counter
+                            stats.dup_or_old_drop += 1;
                             continue;
                         }
                         InOrderDecision::DropOutOfOrderAhead => {
-                            stats.out_of_order_drop += 1; // add this stat if you want
+                            stats.out_of_order_drop += 1;
                             continue;
                         }
                     }
@@ -118,7 +127,6 @@ fn main() {
                             io::stdout().flush().unwrap();
                         }
                         Err(_) => {
-                            // This includes tampering/corruption, wrong key, wrong AAD, etc.
                             stats.auth_fail += 1;
                         }
                     }
@@ -132,8 +140,12 @@ fn main() {
         // Simple live “visualization” every 1 second
         if last_print.elapsed() >= Duration::from_secs(1) {
             eprint!(
-                "\rRX ok={} auth_fail={} replay_drop={} decode_fail={}     ",
-                stats.ok, stats.auth_fail, stats.replay_drop, stats.decode_fail
+                "\rRX ok={} auth_fail={} dup/old_drop={} ooo_drop={} decode_fail={}     ",
+                stats.ok,
+                stats.auth_fail,
+                stats.dup_or_old_drop,
+                stats.out_of_order_drop,
+                stats.decode_fail
             );
             io::stderr().flush().ok();
             last_print = Instant::now();
@@ -147,7 +159,7 @@ fn send_msg<T: serde::Serialize>(dev: &mut XBeeDevice, msg: &T) {
     dev.send(framed).unwrap();
 }
 
-fn recv_msg_blocking<T: for<'a> serde::Deserialize<'a>>(dev: &mut XBeeDevice) -> T {
+fn recv_msg_blocking<T: serde::de::DeserializeOwned>(dev: &mut XBeeDevice) -> T {
     let mut chunk = [0u8; 512];
     let mut rx: Vec<u8> = Vec::new();
 

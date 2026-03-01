@@ -1,12 +1,16 @@
 use serialport::{DataBits, StopBits};
 use std::io::{self, Write};
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
-use xbee_secure::framing::{decode_cobs, encode_cobs};
-use xbee_secure::handshake::{finish_client, make_client_hello, HandshakeMsg};
-use xbee_secure::keys::{load_ed25519_public_key, load_or_generate_ed25519_signing_key, sender_id_from_pubkey};
-use xbee_secure::secure_packet::seal;
-use xbee_secure::serial::{discover_xbee_ports, XBeeDevice};
+use xbee_rust_modem_library::framing::{decode_cobs, encode_cobs};
+use xbee_rust_modem_library::handshake::{finish_client, make_client_hello, HandshakeMsg};
+use xbee_rust_modem_library::keys::{
+    load_ed25519_public_key, load_or_generate_ed25519_signing_key, sender_id_from_pubkey,
+};
+use xbee_rust_modem_library::secure_packet::seal;
+use xbee_rust_modem_library::serial::{discover_xbee_ports, XBeeDevice};
 
 const BAUD: u32 = 9600;
 const SEND_SETTLE_MS: u64 = 50;
@@ -14,7 +18,10 @@ const SEND_SETTLE_MS: u64 = 50;
 fn main() {
     // ---- Serial port selection ----
     let ports = discover_xbee_ports();
-    let port_name = ports.first().cloned().expect("No XBee device found.");
+    let port_name = ports
+        .first()
+        .cloned()
+        .expect("No XBee device found. Check USB connection and permissions.");
     println!("Sender using port: {}", port_name);
 
     let mut dev = XBeeDevice::new(port_name, BAUD, StopBits::One, DataBits::Eight).unwrap();
@@ -26,9 +33,10 @@ fn main() {
     let sender_id = sender_id_from_pubkey(&sender_pk);
 
     // ---- Trust anchor: authorized receiver public key ----
-    // For a lab, simplest provisioning is: copy receiver_ed25519.pub into this file.
-    let authorized_receiver = load_ed25519_public_key(Path::new("keys/authorized_receiver.pub"))
-        .expect("Missing keys/authorized_receiver.pub (copy receiver_ed25519.pub into it)");
+    // Copy receiver_ed25519.pub into keys/authorized_receiver.pub
+    let authorized_receiver =
+        load_ed25519_public_key(Path::new("keys/authorized_receiver.pub"))
+            .expect("Missing keys/authorized_receiver.pub (copy receiver_ed25519.pub into it)");
 
     // ---- Handshake: derive AES-GCM session key ----
     // 1) Send ClientHello
@@ -37,6 +45,8 @@ fn main() {
 
     // 2) Receive ServerHello
     let server_hello: HandshakeMsg = recv_msg_blocking(&mut dev);
+
+    // Pull client ephemeral pub from the hello we already built
     let client_eph_pub = match &client_hello {
         HandshakeMsg::ClientHello { client_eph_pub, .. } => *client_eph_pub,
         _ => unreachable!(),
@@ -48,7 +58,8 @@ fn main() {
         client_id_pub,
         client_eph_pub,
         server_hello,
-    ).expect("Handshake failed (bad receiver signature or wrong authorized receiver key)");
+    )
+    .expect("Handshake failed (bad receiver signature or wrong authorized receiver key)");
 
     println!("Handshake complete. Session AES-256-GCM key established.");
 
@@ -62,20 +73,19 @@ fn main() {
         let mut input = String::new();
         io::stdin().read_line(&mut input).expect("read_line failed");
         let msg = input.trim_end_matches(['\n', '\r']);
+
         if msg == "quit" {
             return;
         }
 
         // Encrypt the plaintext (UTF-8 bytes are fine).
-        let frame = seal(&aes_key, sender_id, seq, msg.as_bytes())
-            .expect("seal failed");
-
+        let frame = seal(&aes_key, sender_id, seq, msg.as_bytes()).expect("seal failed");
         send_msg(&mut dev, &frame);
 
         println!("Sent seq={} ({} bytes plaintext).", seq, msg.len());
         seq = seq.wrapping_add(1);
 
-        std::thread::sleep(std::time::Duration::from_millis(SEND_SETTLE_MS));
+        thread::sleep(Duration::from_millis(SEND_SETTLE_MS));
     }
 }
 
@@ -88,7 +98,7 @@ fn send_msg<T: serde::Serialize>(dev: &mut XBeeDevice, msg: &T) {
 
 /// Receive one COBS-framed message by scanning for 0x00 delimiter.
 /// This is a blocking helper used during handshake.
-fn recv_msg_blocking<T: for<'a> serde::Deserialize<'a>>(dev: &mut XBeeDevice) -> T {
+fn recv_msg_blocking<T: serde::de::DeserializeOwned>(dev: &mut XBeeDevice) -> T {
     let mut chunk = [0u8; 512];
     let mut rx: Vec<u8> = Vec::new();
 
