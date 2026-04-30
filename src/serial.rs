@@ -1,10 +1,10 @@
+use std::collections::BTreeMap;
 use std::{
     io::{Read, Result, Write},
     time::Duration,
 };
-use std::collections::BTreeMap;
 
-use serialport::{available_ports, DataBits, SerialPort, SerialPortType, StopBits};
+use serialport::{DataBits, SerialPort, SerialPortType, StopBits, available_ports};
 
 /// Simple serial wrapper for your XBee device.
 pub struct XBeeDevice {

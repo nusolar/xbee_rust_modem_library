@@ -8,7 +8,7 @@
 //! The result is a per-run session key. That makes nonce/seq management MUCH easier.
 
 use aes_gcm::{Aes256Gcm, Key};
-use ed25519_dalek::{Signature, Signer, Verifier, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -140,9 +140,9 @@ fn derive_aes_key(
 
 /// Initiator side (your "sender") creates a ClientHello.
 pub fn make_client_hello(identity_sk: &SigningKey) -> (HandshakeMsg, EphemeralSecret, [u8; 32]) {
-    let mut rng = OsRng;
+    let rng = OsRng;
 
-    let client_eph_secret = EphemeralSecret::random_from_rng(&mut rng);
+    let client_eph_secret = EphemeralSecret::random_from_rng(rng);
     let client_eph_pub = PublicKey::from(&client_eph_secret).to_bytes();
 
     let client_id_pub = identity_sk.verifying_key().to_bytes();
@@ -181,13 +181,18 @@ pub fn respond_server_hello(
         return None;
     }
 
-    if !verify_client(authorized_client, client_identity_pub, client_eph_pub, sig.as_slice()) {
+    if !verify_client(
+        authorized_client,
+        client_identity_pub,
+        client_eph_pub,
+        sig.as_slice(),
+    ) {
         return None;
     }
 
     // Generate server ephemeral key
-    let mut rng = OsRng;
-    let server_eph_secret = EphemeralSecret::random_from_rng(&mut rng);
+    let rng = OsRng;
+    let server_eph_secret = EphemeralSecret::random_from_rng(rng);
     let server_eph_pub = PublicKey::from(&server_eph_secret).to_bytes();
 
     let server_id_pub = identity_sk.verifying_key().to_bytes();
@@ -267,5 +272,11 @@ pub fn finish_server(
 ) -> Key<Aes256Gcm> {
     let client_pub = PublicKey::from(client_eph_pub);
     let shared = server_eph_secret.diffie_hellman(&client_pub).to_bytes();
-    derive_aes_key(shared, client_id_pub, server_id_pub, client_eph_pub, server_eph_pub)
+    derive_aes_key(
+        shared,
+        client_id_pub,
+        server_id_pub,
+        client_eph_pub,
+        server_eph_pub,
+    )
 }

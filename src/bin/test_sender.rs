@@ -5,15 +5,16 @@ use std::thread;
 use std::time::Duration;
 
 use xbee_rust_modem_library::framing::{decode_cobs, encode_cobs};
-use xbee_rust_modem_library::handshake::{finish_client, make_client_hello, HandshakeMsg};
+use xbee_rust_modem_library::handshake::{HandshakeMsg, finish_client, make_client_hello};
 use xbee_rust_modem_library::keys::{
     load_ed25519_public_key, load_or_generate_ed25519_signing_key, sender_id_from_pubkey,
 };
-use xbee_rust_modem_library::secure_packet::seal;
-use xbee_rust_modem_library::serial::{discover_xbee_ports, XBeeDevice};
+use xbee_rust_modem_library::secure_packet::{MAX_PLAINTEXT, seal};
+use xbee_rust_modem_library::serial::{XBeeDevice, discover_xbee_ports};
 
 const BAUD: u32 = 9600;
 const SEND_SETTLE_MS: u64 = 50;
+const MAX_FRAME_BYTES: usize = 1024;
 
 fn main() {
     // ---- Serial port selection ----
@@ -34,9 +35,8 @@ fn main() {
 
     // ---- Trust anchor: authorized receiver public key ----
     // Copy receiver_ed25519.pub into keys/authorized_receiver.pub
-    let authorized_receiver =
-        load_ed25519_public_key(Path::new("keys/authorized_receiver.pub"))
-            .expect("Missing keys/authorized_receiver.pub (copy receiver_ed25519.pub into it)");
+    let authorized_receiver = load_ed25519_public_key(Path::new("keys/authorized_receiver.pub"))
+        .expect("Missing keys/authorized_receiver.pub (copy receiver_ed25519.pub into it)");
 
     // ---- Handshake: derive AES-GCM session key ----
     // 1) Send ClientHello
@@ -78,6 +78,15 @@ fn main() {
             return;
         }
 
+        if msg.len() > MAX_PLAINTEXT {
+            eprintln!(
+                "Message is {} bytes; maximum plaintext is {} bytes.",
+                msg.len(),
+                MAX_PLAINTEXT
+            );
+            continue;
+        }
+
         // Encrypt the plaintext (UTF-8 bytes are fine).
         let frame = seal(&aes_key, sender_id, seq, msg.as_bytes()).expect("seal failed");
         send_msg(&mut dev, &frame);
@@ -110,6 +119,9 @@ fn recv_msg_blocking<T: serde::de::DeserializeOwned>(dev: &mut XBeeDevice) -> T 
                 if let Some(pos) = rx.iter().position(|b| *b == 0x00) {
                     let mut frame: Vec<u8> = rx.drain(..=pos).collect();
                     return decode_cobs(frame.as_mut_slice()).expect("decode_cobs failed");
+                }
+                if rx.len() > MAX_FRAME_BYTES {
+                    panic!("serial frame exceeded {MAX_FRAME_BYTES} bytes before delimiter");
                 }
             }
             Ok(_) => {}

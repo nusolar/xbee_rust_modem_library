@@ -4,15 +4,16 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use xbee_rust_modem_library::framing::{decode_cobs, encode_cobs};
-use xbee_rust_modem_library::handshake::{finish_server, respond_server_hello, HandshakeMsg};
+use xbee_rust_modem_library::handshake::{HandshakeMsg, finish_server, respond_server_hello};
 use xbee_rust_modem_library::keys::{
     load_ed25519_public_key, load_or_generate_ed25519_signing_key, sender_id_from_pubkey,
 };
 use xbee_rust_modem_library::replay::{InOrder, InOrderDecision};
-use xbee_rust_modem_library::secure_packet::{open, SecureFrame};
-use xbee_rust_modem_library::serial::{discover_xbee_ports, XBeeDevice};
+use xbee_rust_modem_library::secure_packet::{SecureFrame, open};
+use xbee_rust_modem_library::serial::{XBeeDevice, discover_xbee_ports};
 
 const BAUD: u32 = 9600;
+const MAX_FRAME_BYTES: usize = 1024;
 
 #[derive(Default)]
 struct RxStats {
@@ -80,7 +81,7 @@ fn main() {
         receiver_id
     );
 
-    // ---- Receive loop: decode -> in-order gate -> decrypt/auth ----
+    // ---- Receive loop: decode -> decrypt/auth -> in-order gate ----
     let mut inorder = InOrder::default();
     let mut stats = RxStats::default();
     let mut last_print = Instant::now();
@@ -105,7 +106,16 @@ fn main() {
                         }
                     };
 
-                    // Strict in-order gate BEFORE decrypt (cheap)
+                    // Decrypt/authenticate before touching replay state.
+                    let plaintext = match open(&aes_key, &frame) {
+                        Ok(plaintext) => plaintext,
+                        Err(_) => {
+                            stats.auth_fail += 1;
+                            continue;
+                        }
+                    };
+
+                    // Strict in-order gate after auth so forged frames cannot advance state.
                     match inorder.decide_and_update(frame.seq) {
                         InOrderDecision::Accept => {}
                         InOrderDecision::DropOldOrDuplicate => {
@@ -118,18 +128,15 @@ fn main() {
                         }
                     }
 
-                    // Decrypt/authenticate
-                    match open(&aes_key, &frame) {
-                        Ok(plaintext) => {
-                            stats.ok += 1;
-                            io::stdout().write_all(plaintext.as_slice()).unwrap();
-                            io::stdout().write_all(b"\n").unwrap();
-                            io::stdout().flush().unwrap();
-                        }
-                        Err(_) => {
-                            stats.auth_fail += 1;
-                        }
-                    }
+                    stats.ok += 1;
+                    io::stdout().write_all(plaintext.as_slice()).unwrap();
+                    io::stdout().write_all(b"\n").unwrap();
+                    io::stdout().flush().unwrap();
+                }
+
+                if rx.len() > MAX_FRAME_BYTES {
+                    stats.decode_fail += 1;
+                    rx.clear();
                 }
             }
             Ok(_) => {}
@@ -170,6 +177,9 @@ fn recv_msg_blocking<T: serde::de::DeserializeOwned>(dev: &mut XBeeDevice) -> T 
                 if let Some(pos) = rx.iter().position(|b| *b == 0x00) {
                     let mut frame: Vec<u8> = rx.drain(..=pos).collect();
                     return decode_cobs(frame.as_mut_slice()).expect("decode_cobs failed");
+                }
+                if rx.len() > MAX_FRAME_BYTES {
+                    panic!("serial frame exceeded {MAX_FRAME_BYTES} bytes before delimiter");
                 }
             }
             Ok(_) => {}

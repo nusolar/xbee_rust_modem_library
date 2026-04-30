@@ -8,8 +8,8 @@
 //! For aes-gcm in-place API, the tag is appended to the buffer automatically.
 
 use aes_gcm::{
-    aead::{AeadInPlace, KeyInit},
     Aes256Gcm, Key, Nonce,
+    aead::{AeadInPlace, KeyInit},
 };
 use serde::{Deserialize, Serialize};
 
@@ -71,7 +71,8 @@ pub fn seal(
 
     // Use heapless Vec buffer so we avoid heap alloc.
     let mut buf: HeapVec<u8, MAX_CIPHERTEXT> = HeapVec::new();
-    buf.extend_from_slice(plaintext).map_err(|_| "buffer overflow")?;
+    buf.extend_from_slice(plaintext)
+        .map_err(|_| "buffer overflow")?;
 
     // Encrypt in-place: replaces plaintext with ciphertext and appends tag to end of buf.
     cipher
@@ -113,6 +114,7 @@ pub fn open(
 
     // After decrypt_in_place, buf contains plaintext.
     let mut out: HeapVec<u8, MAX_PLAINTEXT> = HeapVec::new();
-    out.extend_from_slice(buf.as_slice()).map_err(|_| "overflow")?;
+    out.extend_from_slice(buf.as_slice())
+        .map_err(|_| "overflow")?;
     Ok(out)
 }
