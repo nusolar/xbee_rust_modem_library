@@ -8,15 +8,16 @@
 //! For aes-gcm in-place API, the tag is appended to the buffer automatically.
 
 use aes_gcm::{
-    aead::{AeadInPlace, KeyInit},
     Aes256Gcm, Key, Nonce,
+    aead::{AeadInPlace, KeyInit},
 };
 use serde::{Deserialize, Serialize};
 
 use aes_gcm::aead::heapless::Vec as HeapVec;
 
-/// Max plaintext payload you previously used.
-pub const MAX_PLAINTEXT: usize = 256;
+/// Keep secured frames small enough to fit typical XBee 802.15.4 RF payloads.
+/// The encrypted frame adds sender_id, seq, nonce, tag, and postcard/COBS overhead.
+pub const MAX_PLAINTEXT: usize = 64;
 /// AES-GCM adds a 16-byte authentication tag.
 pub const TAG_SIZE: usize = 16;
 /// Buffer capacity for ciphertext+tag.
@@ -71,7 +72,8 @@ pub fn seal(
 
     // Use heapless Vec buffer so we avoid heap alloc.
     let mut buf: HeapVec<u8, MAX_CIPHERTEXT> = HeapVec::new();
-    buf.extend_from_slice(plaintext).map_err(|_| "buffer overflow")?;
+    buf.extend_from_slice(plaintext)
+        .map_err(|_| "buffer overflow")?;
 
     // Encrypt in-place: replaces plaintext with ciphertext and appends tag to end of buf.
     cipher
@@ -113,6 +115,7 @@ pub fn open(
 
     // After decrypt_in_place, buf contains plaintext.
     let mut out: HeapVec<u8, MAX_PLAINTEXT> = HeapVec::new();
-    out.extend_from_slice(buf.as_slice()).map_err(|_| "overflow")?;
+    out.extend_from_slice(buf.as_slice())
+        .map_err(|_| "overflow")?;
     Ok(out)
 }

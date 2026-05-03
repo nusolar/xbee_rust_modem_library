@@ -2,6 +2,7 @@
 name = "xbee_rust_modem_library"
 version = "0.1.0"
 edition = "2024"
+default-run = "xbee_rust_modem_library"
 
 [dependencies]
 serialport = "4.8.1"

@@ -12,11 +12,12 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 /// Also writes a `.pub` file next to it for convenience.
 pub fn load_or_generate_ed25519_signing_key(path: &Path) -> io::Result<SigningKey> {
     if let Ok(s) = fs::read_to_string(path) {
-        let bytes = Base64::decode_vec(s.trim())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("base64 decode: {e}")))?;
-        let sk_bytes: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "signing key must be 32 bytes"))?;
+        let bytes = Base64::decode_vec(s.trim()).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("base64 decode: {e}"))
+        })?;
+        let sk_bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "signing key must be 32 bytes")
+        })?;
         let sk = SigningKey::from_bytes(&sk_bytes);
         return Ok(sk);
     }

@@ -8,7 +8,7 @@
 //! The result is a per-run session key. That makes nonce/seq management MUCH easier.
 
 use aes_gcm::{Aes256Gcm, Key};
-use ed25519_dalek::{Signature, Signer, Verifier, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
@@ -181,7 +181,12 @@ pub fn respond_server_hello(
         return None;
     }
 
-    if !verify_client(authorized_client, client_identity_pub, client_eph_pub, sig.as_slice()) {
+    if !verify_client(
+        authorized_client,
+        client_identity_pub,
+        client_eph_pub,
+        sig.as_slice(),
+    ) {
         return None;
     }
 
@@ -267,5 +272,11 @@ pub fn finish_server(
 ) -> Key<Aes256Gcm> {
     let client_pub = PublicKey::from(client_eph_pub);
     let shared = server_eph_secret.diffie_hellman(&client_pub).to_bytes();
-    derive_aes_key(shared, client_id_pub, server_id_pub, client_eph_pub, server_eph_pub)
+    derive_aes_key(
+        shared,
+        client_id_pub,
+        server_id_pub,
+        client_eph_pub,
+        server_eph_pub,
+    )
 }

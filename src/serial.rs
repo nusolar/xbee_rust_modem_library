@@ -1,14 +1,22 @@
-use std::{
-    io::{Read, Result, Write},
-    time::Duration,
-};
 use std::collections::BTreeMap;
+use std::{
+    io::{self, Read, Result, Write},
+    thread,
+    time::{Duration, Instant},
+};
 
-use serialport::{available_ports, DataBits, SerialPort, SerialPortType, StopBits};
+use serialport::{DataBits, SerialPort, SerialPortType, StopBits, available_ports};
 
 /// Simple serial wrapper for your XBee device.
 pub struct XBeeDevice {
     port: Box<dyn SerialPort>,
+}
+
+pub struct TransparentRadioConfig {
+    pub packetization_timeout: u8,
+    pub xbee_retries: u8,
+    pub mac_mode: u8,
+    pub channel: u8,
 }
 
 impl XBeeDevice {
@@ -30,6 +38,101 @@ impl XBeeDevice {
 
     pub fn receive(&mut self, buffer: &mut [u8]) -> Result<usize> {
         self.port.read(buffer)
+    }
+
+    pub fn configure_transparent_radio(&mut self, config: &TransparentRadioConfig) -> Result<()> {
+        self.enter_command_mode()?;
+
+        let result = (|| {
+            self.expect_ok("RO", &format!("{:X}", config.packetization_timeout))?;
+            self.expect_ok("RR", &format!("{:X}", config.xbee_retries))?;
+            self.expect_ok("MM", &format!("{:X}", config.mac_mode))?;
+            self.expect_ok("CH", &format!("{:X}", config.channel))?;
+            self.expect_ok("AC", "")?;
+            Ok(())
+        })();
+
+        let exit_result = self.expect_ok("CN", "");
+        result.and(exit_result)
+    }
+
+    fn enter_command_mode(&mut self) -> Result<()> {
+        self.drain_input()?;
+        thread::sleep(Duration::from_millis(1100));
+        self.port.write_all(b"+++")?;
+        self.port.flush()?;
+        thread::sleep(Duration::from_millis(1100));
+
+        let response = self.read_at_response(Duration::from_secs(2))?;
+        if response.trim() == "OK" {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("failed to enter XBee command mode: {response:?}"),
+            ))
+        }
+    }
+
+    fn expect_ok(&mut self, command: &str, value: &str) -> Result<()> {
+        let response = self.send_at_command(command, value)?;
+        if response.trim() == "OK" {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("AT{command}{value} failed: {response:?}"),
+            ))
+        }
+    }
+
+    fn send_at_command(&mut self, command: &str, value: &str) -> Result<String> {
+        self.port.write_all(b"AT")?;
+        self.port.write_all(command.as_bytes())?;
+        self.port.write_all(value.as_bytes())?;
+        self.port.write_all(b"\r")?;
+        self.port.flush()?;
+        self.read_at_response(Duration::from_secs(2))
+    }
+
+    fn read_at_response(&mut self, timeout: Duration) -> Result<String> {
+        let deadline = Instant::now() + timeout;
+        let mut out = Vec::new();
+        let mut byte = [0u8; 1];
+
+        while Instant::now() < deadline {
+            match self.port.read(&mut byte) {
+                Ok(1) => {
+                    out.push(byte[0]);
+                    if byte[0] == b'\r' {
+                        return Ok(String::from_utf8_lossy(&out).into_owned());
+                    }
+                }
+                Ok(_) => {}
+                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "timed out waiting for XBee AT response; partial response: {:?}",
+                String::from_utf8_lossy(&out)
+            ),
+        ))
+    }
+
+    fn drain_input(&mut self) -> Result<()> {
+        let mut buf = [0u8; 128];
+        loop {
+            match self.port.read(&mut buf) {
+                Ok(0) => return Ok(()),
+                Ok(_) => {}
+                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => return Ok(()),
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
 

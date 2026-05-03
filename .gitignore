@@ -1,1 +1,16 @@
-/target
+# Rust build output
+/target/
+
+# Local generated key material
+/keys/*.key
+/keys/*.pub
+
+# Logs and local runtime output
+*.log
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
