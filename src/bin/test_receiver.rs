@@ -19,7 +19,7 @@ struct RxStats {
     ok: u64,
     auth_fail: u64,
     dup_or_old_drop: u64,
-    out_of_order_drop: u64,
+    skipped_packets: u64,
     decode_fail: u64,
 }
 
@@ -105,22 +105,22 @@ fn main() {
                         }
                     };
 
-                    // Strict in-order gate BEFORE decrypt (cheap)
-                    match inorder.decide_and_update(frame.seq) {
-                        InOrderDecision::Accept => {}
+                    // Reject old frames before decrypting. Commit newer seq values only after
+                    // authentication succeeds, because seq is authenticated by AES-GCM AAD.
+                    let skipped = match inorder.decide(frame.seq) {
+                        InOrderDecision::Accept => 0,
+                        InOrderDecision::AcceptWithGap { skipped } => skipped,
                         InOrderDecision::DropOldOrDuplicate => {
                             stats.dup_or_old_drop += 1;
                             continue;
                         }
-                        InOrderDecision::DropOutOfOrderAhead => {
-                            stats.out_of_order_drop += 1;
-                            continue;
-                        }
-                    }
+                    };
 
                     // Decrypt/authenticate
                     match open(&aes_key, &frame) {
                         Ok(plaintext) => {
+                            inorder.accept(frame.seq);
+                            stats.skipped_packets += skipped;
                             stats.ok += 1;
                             io::stdout().write_all(plaintext.as_slice()).unwrap();
                             io::stdout().write_all(b"\n").unwrap();
@@ -140,11 +140,11 @@ fn main() {
         // Simple live “visualization” every 1 second
         if last_print.elapsed() >= Duration::from_secs(1) {
             eprint!(
-                "\rRX ok={} auth_fail={} dup/old_drop={} ooo_drop={} decode_fail={}     ",
+                "\rRX ok={} auth_fail={} dup/old_drop={} skipped={} decode_fail={}     ",
                 stats.ok,
                 stats.auth_fail,
                 stats.dup_or_old_drop,
-                stats.out_of_order_drop,
+                stats.skipped_packets,
                 stats.decode_fail
             );
             io::stderr().flush().ok();

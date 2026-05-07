@@ -1,5 +1,5 @@
 use serialport::{DataBits, StopBits};
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -13,7 +13,7 @@ use xbee_rust_modem_library::secure_packet::seal;
 use xbee_rust_modem_library::serial::{discover_xbee_ports, XBeeDevice};
 
 const BAUD: u32 = 9600;
-const SEND_SETTLE_MS: u64 = 50;
+const SEND_INTERVAL_MS: u64 = 50;
 
 fn main() {
     // ---- Serial port selection ----
@@ -34,9 +34,8 @@ fn main() {
 
     // ---- Trust anchor: authorized receiver public key ----
     // Copy receiver_ed25519.pub into keys/authorized_receiver.pub
-    let authorized_receiver =
-        load_ed25519_public_key(Path::new("keys/authorized_receiver.pub"))
-            .expect("Missing keys/authorized_receiver.pub (copy receiver_ed25519.pub into it)");
+    let authorized_receiver = load_ed25519_public_key(Path::new("keys/authorized_receiver.pub"))
+        .expect("Missing keys/authorized_receiver.pub (copy receiver_ed25519.pub into it)");
 
     // ---- Handshake: derive AES-GCM session key ----
     // 1) Send ClientHello
@@ -67,25 +66,16 @@ fn main() {
     let mut seq: u64 = 0;
 
     loop {
-        print!("Enter message to send (or 'quit'): ");
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).expect("read_line failed");
-        let msg = input.trim_end_matches(['\n', '\r']);
-
-        if msg == "quit" {
-            return;
-        }
+        let msg = seq.to_string();
 
         // Encrypt the plaintext (UTF-8 bytes are fine).
         let frame = seal(&aes_key, sender_id, seq, msg.as_bytes()).expect("seal failed");
         send_msg(&mut dev, &frame);
 
-        println!("Sent seq={} ({} bytes plaintext).", seq, msg.len());
+        println!("Sent {msg}");
         seq = seq.wrapping_add(1);
 
-        thread::sleep(Duration::from_millis(SEND_SETTLE_MS));
+        thread::sleep(Duration::from_millis(SEND_INTERVAL_MS));
     }
 }
 
