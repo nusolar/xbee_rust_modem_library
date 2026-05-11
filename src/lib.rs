@@ -11,3 +11,6 @@ pub mod keys;
 pub mod replay;
 pub mod handshake;
 pub mod secure_packet;
+
+pub mod api_mode;
+pub mod transport;

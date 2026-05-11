@@ -11,7 +11,10 @@ use xbee_rust_modem_library::keys::{
 };
 use xbee_rust_modem_library::secure_packet::seal;
 use xbee_rust_modem_library::serial::{discover_xbee_ports, XBeeDevice};
+use xbee_rust_modem_library::transport::{xbee_destination_from_env, ApiModeTransport, Transport};
 
+// Default UART baud — must match XCTU **BD** on both radios.
+// API mode (AP=2) is used; raise baud after verifying the link end-to-end.
 const BAUD: u32 = 9600;
 const SEND_INTERVAL_MS: u64 = 50;
 
@@ -24,7 +27,13 @@ fn main() {
         .expect("No XBee device found. Check USB connection and permissions.");
     println!("Sender using port: {}", port_name);
 
-    let mut dev = XBeeDevice::new(port_name, BAUD, StopBits::One, DataBits::Eight).unwrap();
+    let dev = XBeeDevice::new(port_name, BAUD, StopBits::One, DataBits::Eight).unwrap();
+    let (dest64, dest16) = xbee_destination_from_env();
+    eprintln!(
+        "API mode (AP=2): RF dest 64-bit {dest64:#018x}, 16-bit {dest16:#06x} \
+         (set XBEE_DEST64 to the *peer* radio 64-bit address: XCTU SH+SL as 16 hex digits)"
+    );
+    let mut dev = ApiModeTransport::new(dev, dest64, dest16);
 
     // ---- Identity keys (Ed25519) ----
     let signing_key_path = Path::new("keys/sender_ed25519.key");
@@ -80,7 +89,7 @@ fn main() {
 }
 
 /// Send any postcard-serializable message as COBS framed bytes.
-fn send_msg<T: serde::Serialize>(dev: &mut XBeeDevice, msg: &T) {
+fn send_msg<T: serde::Serialize, Tr: Transport>(dev: &mut Tr, msg: &T) {
     let mut out = [0u8; 1024];
     let framed = encode_cobs(msg, &mut out).expect("encode_cobs failed");
     dev.send(framed).unwrap();
@@ -88,12 +97,12 @@ fn send_msg<T: serde::Serialize>(dev: &mut XBeeDevice, msg: &T) {
 
 /// Receive one COBS-framed message by scanning for 0x00 delimiter.
 /// This is a blocking helper used during handshake.
-fn recv_msg_blocking<T: serde::de::DeserializeOwned>(dev: &mut XBeeDevice) -> T {
+fn recv_msg_blocking<T: serde::de::DeserializeOwned, Tr: Transport>(dev: &mut Tr) -> T {
     let mut chunk = [0u8; 512];
     let mut rx: Vec<u8> = Vec::new();
 
     loop {
-        match dev.receive(&mut chunk) {
+        match dev.recv(&mut chunk) {
             Ok(n) if n > 0 => {
                 rx.extend_from_slice(&chunk[..n]);
 
