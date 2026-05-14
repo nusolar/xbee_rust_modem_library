@@ -13,14 +13,17 @@ use xbee_rust_modem_library::secure_packet::{open, SecureFrame};
 use xbee_rust_modem_library::serial::{discover_xbee_ports, XBeeDevice};
 
 const BAUD: u32 = 9600;
+const MAX_ENCODED_FRAME: usize = 1024;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 struct RxStats {
     ok: u64,
     auth_fail: u64,
     dup_or_old_drop: u64,
-    out_of_order_drop: u64,
+    missed_frames: u64,
     decode_fail: u64,
+    rx_overflow: u64,
 }
 
 fn main() {
@@ -47,7 +50,8 @@ fn main() {
 
     // ---- Handshake ----
     // 1) Receive ClientHello
-    let client_hello: HandshakeMsg = recv_msg_blocking(&mut dev);
+    let client_hello: HandshakeMsg = recv_msg_blocking(&mut dev, HANDSHAKE_TIMEOUT)
+        .expect("Timed out waiting for ClientHello during handshake");
 
     // 2) Verify + respond with ServerHello
     let (server_hello, server_eph_secret, client_id_pub, client_eph_pub) =
@@ -91,6 +95,11 @@ fn main() {
     loop {
         match dev.receive(&mut chunk) {
             Ok(n) if n > 0 => {
+                if rx.len() + n > MAX_ENCODED_FRAME {
+                    stats.rx_overflow += 1;
+                    rx.clear();
+                }
+
                 rx.extend_from_slice(&chunk[..n]);
 
                 while let Some(pos) = rx.iter().position(|b| *b == 0x00) {
@@ -112,9 +121,8 @@ fn main() {
                             stats.dup_or_old_drop += 1;
                             continue;
                         }
-                        InOrderDecision::DropOutOfOrderAhead => {
-                            stats.out_of_order_drop += 1;
-                            continue;
+                        InOrderDecision::AcceptWithGap { missed } => {
+                            stats.missed_frames += missed;
                         }
                     }
 
@@ -141,12 +149,13 @@ fn main() {
         // Simple live “visualization” every 1 second
         if last_print.elapsed() >= Duration::from_secs(1) {
             eprint!(
-                "\rRX ok={} auth_fail={} dup/old_drop={} ooo_drop={} decode_fail={}     ",
+                "\rRX ok={} auth_fail={} dup/old_drop={} missed={} decode_fail={} rx_overflow={}     ",
                 stats.ok,
                 stats.auth_fail,
                 stats.dup_or_old_drop,
-                stats.out_of_order_drop,
-                stats.decode_fail
+                stats.missed_frames,
+                stats.decode_fail,
+                stats.rx_overflow
             );
             io::stderr().flush().ok();
             last_print = Instant::now();
@@ -160,22 +169,38 @@ fn send_msg<T: serde::Serialize>(dev: &mut XBeeDevice, msg: &T) {
     dev.send(framed).unwrap();
 }
 
-fn recv_msg_blocking<T: serde::de::DeserializeOwned>(dev: &mut XBeeDevice) -> T {
+fn recv_msg_blocking<T: serde::de::DeserializeOwned>(
+    dev: &mut XBeeDevice,
+    timeout: Duration,
+) -> io::Result<T> {
+    let deadline = Instant::now() + timeout;
     let mut chunk = [0u8; 512];
     let mut rx: Vec<u8> = Vec::new();
 
-    loop {
+    while Instant::now() < deadline {
         match dev.receive(&mut chunk) {
             Ok(n) if n > 0 => {
+                if rx.len() + n > MAX_ENCODED_FRAME {
+                    rx.clear();
+                }
+
                 rx.extend_from_slice(&chunk[..n]);
                 if let Some(pos) = rx.iter().position(|b| *b == 0x00) {
                     let mut frame: Vec<u8> = rx.drain(..=pos).collect();
-                    return decode_cobs(frame.as_mut_slice()).expect("decode_cobs failed");
+                    match decode_cobs(frame.as_mut_slice()) {
+                        Ok(msg) => return Ok(msg),
+                        Err(_) => continue,
+                    }
                 }
             }
             Ok(_) => {}
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {}
-            Err(e) => panic!("serial error: {e:?}"),
+            Err(e) => return Err(e),
         }
     }
+
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "timed out waiting for framed handshake message",
+    ))
 }

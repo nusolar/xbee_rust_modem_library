@@ -67,8 +67,7 @@ impl XBeeDevice {
         if response.trim() == "OK" {
             Ok(())
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
+            Err(io::Error::other(
                 format!("failed to enter XBee command mode: {response:?}"),
             ))
         }
@@ -79,8 +78,7 @@ impl XBeeDevice {
         if response.trim() == "OK" {
             Ok(())
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
+            Err(io::Error::other(
                 format!("AT{command}{value} failed: {response:?}"),
             ))
         }

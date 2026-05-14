@@ -51,8 +51,8 @@ pub fn load_ed25519_public_key(path: &Path) -> io::Result<VerifyingKey> {
     let pk_bytes: [u8; 32] = bytes
         .try_into()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "public key must be 32 bytes"))?;
-    Ok(VerifyingKey::from_bytes(&pk_bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("bad public key: {e}")))?)
+    VerifyingKey::from_bytes(&pk_bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("bad public key: {e}")))
 }
 
 /// A small “sender id” used in headers/logging.

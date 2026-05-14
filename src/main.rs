@@ -19,6 +19,8 @@ use xbee_rust_modem_library::serial::{TransparentRadioConfig, XBeeDevice, discov
 
 const BAUD: u32 = 9600;
 const SEND_SETTLE_MS: u64 = 50;
+const MAX_ENCODED_FRAME: usize = 1024;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const RADIO_CONFIG: TransparentRadioConfig = TransparentRadioConfig {
     packetization_timeout: 0x14,
     xbee_retries: 0x03,
@@ -37,8 +39,9 @@ struct RxStats {
     ok: u64,
     auth_fail: u64,
     dup_or_old_drop: u64,
-    out_of_order_drop: u64,
+    missed_frames: u64,
     decode_fail: u64,
+    rx_overflow: u64,
 }
 
 fn main() {
@@ -131,7 +134,8 @@ fn run_sender() {
     let (client_hello, client_eph_secret, client_id_pub) = make_client_hello(&sender_sk);
     send_msg(&mut dev, &client_hello);
 
-    let server_hello: HandshakeMsg = recv_msg_blocking(&mut dev);
+    let server_hello: HandshakeMsg = recv_msg_blocking(&mut dev, HANDSHAKE_TIMEOUT)
+        .expect("Timed out waiting for ServerHello during handshake");
 
     let client_eph_pub = match &client_hello {
         HandshakeMsg::ClientHello { client_eph_pub, .. } => *client_eph_pub,
@@ -200,7 +204,8 @@ fn run_receiver() {
     let authorized_sender = load_ed25519_public_key(&key_path("authorized_sender.pub"))
         .expect("Missing keys/authorized_sender.pub (copy sender_ed25519.pub into it)");
 
-    let client_hello: HandshakeMsg = recv_msg_blocking(&mut dev);
+    let client_hello: HandshakeMsg = recv_msg_blocking(&mut dev, HANDSHAKE_TIMEOUT)
+        .expect("Timed out waiting for ClientHello during handshake");
 
     let (server_hello, server_eph_secret, client_id_pub, client_eph_pub) =
         respond_server_hello(&receiver_sk, &authorized_sender, client_hello)
@@ -240,6 +245,11 @@ fn run_receiver() {
     loop {
         match dev.receive(&mut chunk) {
             Ok(n) if n > 0 => {
+                if rx.len() + n > MAX_ENCODED_FRAME {
+                    stats.rx_overflow += 1;
+                    rx.clear();
+                }
+
                 rx.extend_from_slice(&chunk[..n]);
 
                 while let Some(pos) = rx.iter().position(|b| *b == 0x00) {
@@ -259,9 +269,8 @@ fn run_receiver() {
                             stats.dup_or_old_drop += 1;
                             continue;
                         }
-                        InOrderDecision::DropOutOfOrderAhead => {
-                            stats.out_of_order_drop += 1;
-                            continue;
+                        InOrderDecision::AcceptWithGap { missed } => {
+                            stats.missed_frames += missed;
                         }
                     }
 
@@ -286,12 +295,13 @@ fn run_receiver() {
 
         if last_print.elapsed() >= Duration::from_secs(1) {
             eprint!(
-                "\rRX ok={} auth_fail={} dup/old_drop={} ooo_drop={} decode_fail={}     ",
+                "\rRX ok={} auth_fail={} dup/old_drop={} missed={} decode_fail={} rx_overflow={}     ",
                 stats.ok,
                 stats.auth_fail,
                 stats.dup_or_old_drop,
-                stats.out_of_order_drop,
-                stats.decode_fail
+                stats.missed_frames,
+                stats.decode_fail,
+                stats.rx_overflow
             );
             io::stderr().flush().ok();
             last_print = Instant::now();
@@ -320,23 +330,39 @@ fn configure_radio_or_exit(dev: &mut XBeeDevice) {
     );
 }
 
-fn recv_msg_blocking<T: serde::de::DeserializeOwned>(dev: &mut XBeeDevice) -> T {
+fn recv_msg_blocking<T: serde::de::DeserializeOwned>(
+    dev: &mut XBeeDevice,
+    timeout: Duration,
+) -> io::Result<T> {
+    let deadline = Instant::now() + timeout;
     let mut chunk = [0u8; 512];
     let mut rx: Vec<u8> = Vec::new();
 
-    loop {
+    while Instant::now() < deadline {
         match dev.receive(&mut chunk) {
             Ok(n) if n > 0 => {
+                if rx.len() + n > MAX_ENCODED_FRAME {
+                    rx.clear();
+                }
+
                 rx.extend_from_slice(&chunk[..n]);
 
                 if let Some(pos) = rx.iter().position(|b| *b == 0x00) {
                     let mut frame: Vec<u8> = rx.drain(..=pos).collect();
-                    return decode_cobs(frame.as_mut_slice()).expect("decode_cobs failed");
+                    match decode_cobs(frame.as_mut_slice()) {
+                        Ok(msg) => return Ok(msg),
+                        Err(_) => continue,
+                    }
                 }
             }
             Ok(_) => {}
             Err(ref e) if e.kind() == io::ErrorKind::TimedOut => {}
-            Err(e) => panic!("serial error: {e:?}"),
+            Err(e) => return Err(e),
         }
     }
+
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "timed out waiting for framed handshake message",
+    ))
 }

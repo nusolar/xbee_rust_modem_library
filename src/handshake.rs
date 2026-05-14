@@ -140,9 +140,9 @@ fn derive_aes_key(
 
 /// Initiator side (your "sender") creates a ClientHello.
 pub fn make_client_hello(identity_sk: &SigningKey) -> (HandshakeMsg, EphemeralSecret, [u8; 32]) {
-    let mut rng = OsRng;
+    let rng = OsRng;
 
-    let client_eph_secret = EphemeralSecret::random_from_rng(&mut rng);
+    let client_eph_secret = EphemeralSecret::random_from_rng(rng);
     let client_eph_pub = PublicKey::from(&client_eph_secret).to_bytes();
 
     let client_id_pub = identity_sk.verifying_key().to_bytes();
@@ -191,8 +191,8 @@ pub fn respond_server_hello(
     }
 
     // Generate server ephemeral key
-    let mut rng = OsRng;
-    let server_eph_secret = EphemeralSecret::random_from_rng(&mut rng);
+    let rng = OsRng;
+    let server_eph_secret = EphemeralSecret::random_from_rng(rng);
     let server_eph_pub = PublicKey::from(&server_eph_secret).to_bytes();
 
     let server_id_pub = identity_sk.verifying_key().to_bytes();
