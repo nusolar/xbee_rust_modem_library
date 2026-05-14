@@ -253,7 +253,7 @@ fn run_receiver() {
                         }
                     };
 
-                    match inorder.decide_and_update(frame.seq) {
+                    match inorder.decide(frame.seq) {
                         InOrderDecision::Accept => {}
                         InOrderDecision::DropOldOrDuplicate => {
                             stats.dup_or_old_drop += 1;
@@ -267,6 +267,7 @@ fn run_receiver() {
 
                     match open(&aes_key, &frame) {
                         Ok(plaintext) => {
+                            inorder.mark_accepted(frame.seq);
                             stats.ok += 1;
                             io::stdout().write_all(plaintext.as_slice()).unwrap();
                             io::stdout().write_all(b"\n").unwrap();

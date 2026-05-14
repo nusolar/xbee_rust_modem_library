@@ -11,3 +11,8 @@ pub mod keys;
 pub mod replay;
 pub mod secure_packet;
 pub mod serial;
+
+#[cfg(test)]
+mod tests {
+    mod crypto_roundtrip;
+}

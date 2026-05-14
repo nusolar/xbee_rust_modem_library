@@ -1,7 +1,6 @@
 use aes_gcm::{Aes256Gcm, Key};
-use aes_gcm::aead::KeyInit;
 
-use xbee_rust_modem_library::secure_packet::{seal, open};
+use crate::secure_packet::{open, seal};
 
 #[test]
 fn encrypt_decrypt_roundtrip() {
@@ -11,11 +10,9 @@ fn encrypt_decrypt_roundtrip() {
     let seq = 0u64;
     let plaintext = b"hello secure world";
 
-    let frame = seal(&key, sender_id, seq, plaintext)
-        .expect("seal failed");
+    let frame = seal(&key, sender_id, seq, plaintext).expect("seal failed");
 
-    let recovered = open(&key, &frame)
-        .expect("open failed");
+    let recovered = open(&key, &frame).expect("open failed");
 
     assert_eq!(recovered.as_slice(), plaintext);
 }
@@ -28,8 +25,7 @@ fn tamper_detection() {
     let seq = 5;
     let plaintext = b"attack at dawn";
 
-    let mut frame = seal(&key, sender_id, seq, plaintext)
-        .expect("seal failed");
+    let mut frame = seal(&key, sender_id, seq, plaintext).expect("seal failed");
 
     // flip 1 bit
     frame.ciphertext_with_tag[0] ^= 0x01;
@@ -46,8 +42,7 @@ fn wrong_key_fails() {
     let seq = 42;
     let plaintext = b"super secret";
 
-    let frame = seal(&key1, sender_id, seq, plaintext)
-        .expect("seal failed");
+    let frame = seal(&key1, sender_id, seq, plaintext).expect("seal failed");
 
     assert!(open(&key2, &frame).is_err());
 }
