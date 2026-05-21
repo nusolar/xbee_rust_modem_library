@@ -316,18 +316,36 @@ fn send_msg<T: serde::Serialize>(dev: &mut XBeeDevice, msg: &T) {
 }
 
 fn configure_radio_or_exit(dev: &mut XBeeDevice) {
-    if let Err(err) = dev.configure_transparent_radio(&RADIO_CONFIG) {
-        eprintln!("Failed to configure local XBee radio: {err}");
-        process::exit(1);
-    }
+    let report = match dev.configure_transparent_radio(&RADIO_CONFIG) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("Failed to configure local XBee radio: {err}");
+            process::exit(1);
+        }
+    };
 
     println!(
-        "XBee configured: RO={:X} RR={:X} MM={:X} CH={:X}",
-        RADIO_CONFIG.packetization_timeout,
-        RADIO_CONFIG.xbee_retries,
-        RADIO_CONFIG.mac_mode,
-        RADIO_CONFIG.channel
+        "XBee configured: RO={:X} RR={:X}",
+        RADIO_CONFIG.packetization_timeout, RADIO_CONFIG.xbee_retries
     );
+
+    if report.mac_mode_applied {
+        println!("XBee MAC mode configured: MM={:X}", RADIO_CONFIG.mac_mode);
+    } else {
+        eprintln!(
+            "XBee did not accept ATMM{:X}; continuing with the radio's existing MAC mode.",
+            RADIO_CONFIG.mac_mode
+        );
+    }
+
+    if report.channel_applied {
+        println!("XBee channel configured: CH={:X}", RADIO_CONFIG.channel);
+    } else {
+        eprintln!(
+            "XBee did not accept ATCH{:X}; continuing with the radio's existing channel.",
+            RADIO_CONFIG.channel
+        );
+    }
 }
 
 fn recv_msg_blocking<T: serde::de::DeserializeOwned>(

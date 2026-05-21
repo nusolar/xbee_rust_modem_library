@@ -19,6 +19,11 @@ pub struct TransparentRadioConfig {
     pub channel: u8,
 }
 
+pub struct TransparentRadioReport {
+    pub mac_mode_applied: bool,
+    pub channel_applied: bool,
+}
+
 impl XBeeDevice {
     pub fn new(port: String, baud: u32, stop_bits: StopBits, data_bits: DataBits) -> Result<Self> {
         let port = serialport::new(port, baud)
@@ -40,20 +45,32 @@ impl XBeeDevice {
         self.port.read(buffer)
     }
 
-    pub fn configure_transparent_radio(&mut self, config: &TransparentRadioConfig) -> Result<()> {
+    pub fn configure_transparent_radio(
+        &mut self,
+        config: &TransparentRadioConfig,
+    ) -> Result<TransparentRadioReport> {
         self.enter_command_mode()?;
 
         let result = (|| {
             self.expect_ok("RO", &format!("{:X}", config.packetization_timeout))?;
             self.expect_ok("RR", &format!("{:X}", config.xbee_retries))?;
-            self.expect_ok("MM", &format!("{:X}", config.mac_mode))?;
-            self.expect_ok("CH", &format!("{:X}", config.channel))?;
+            let mac_mode_applied =
+                self.expect_ok_or_unsupported("MM", &format!("{:X}", config.mac_mode))?;
+            let channel_applied =
+                self.expect_ok_or_unsupported("CH", &format!("{:X}", config.channel))?;
             self.expect_ok("AC", "")?;
-            Ok(())
+            Ok(TransparentRadioReport {
+                mac_mode_applied,
+                channel_applied,
+            })
         })();
 
         let exit_result = self.expect_ok("CN", "");
-        result.and(exit_result)
+        match (result, exit_result) {
+            (Ok(report), Ok(())) => Ok(report),
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err),
+        }
     }
 
     fn enter_command_mode(&mut self) -> Result<()> {
@@ -67,9 +84,9 @@ impl XBeeDevice {
         if response.trim() == "OK" {
             Ok(())
         } else {
-            Err(io::Error::other(
-                format!("failed to enter XBee command mode: {response:?}"),
-            ))
+            Err(io::Error::other(format!(
+                "failed to enter XBee command mode: {response:?}"
+            )))
         }
     }
 
@@ -78,9 +95,20 @@ impl XBeeDevice {
         if response.trim() == "OK" {
             Ok(())
         } else {
-            Err(io::Error::other(
-                format!("AT{command}{value} failed: {response:?}"),
-            ))
+            Err(io::Error::other(format!(
+                "AT{command}{value} failed: {response:?}"
+            )))
+        }
+    }
+
+    fn expect_ok_or_unsupported(&mut self, command: &str, value: &str) -> Result<bool> {
+        let response = self.send_at_command(command, value)?;
+        match response.trim() {
+            "OK" => Ok(true),
+            "ERROR" => Ok(false),
+            _ => Err(io::Error::other(format!(
+                "AT{command}{value} failed: {response:?}"
+            ))),
         }
     }
 
