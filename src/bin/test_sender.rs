@@ -29,10 +29,6 @@ fn main() {
 
     let dev = XBeeDevice::new(port_name, BAUD, StopBits::One, DataBits::Eight).unwrap();
     let (dest64, dest16) = xbee_destination_from_env();
-    eprintln!(
-        "API mode (AP=2): RF dest 64-bit {dest64:#018x}, 16-bit {dest16:#06x} \
-         (set XBEE_DEST64 to the *peer* radio 64-bit address: XCTU SH+SL as 16 hex digits)"
-    );
     let mut dev = ApiModeTransport::new(dev, dest64, dest16);
 
     // ---- Identity keys (Ed25519) ----

@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use xbee_rust_modem_library::api_mode::{BROADCAST_ADDR_64, UNKNOWN_ADDR_16};
 use xbee_rust_modem_library::framing::{decode_cobs, encode_cobs};
 use xbee_rust_modem_library::handshake::{finish_server, respond_server_hello, HandshakeMsg};
 use xbee_rust_modem_library::keys::{
@@ -11,7 +12,7 @@ use xbee_rust_modem_library::keys::{
 use xbee_rust_modem_library::replay::{InOrder, InOrderDecision};
 use xbee_rust_modem_library::secure_packet::{open, SecureFrame};
 use xbee_rust_modem_library::serial::{discover_xbee_ports, XBeeDevice};
-use xbee_rust_modem_library::transport::{xbee_destination_from_env, ApiModeTransport, Transport};
+use xbee_rust_modem_library::transport::{ApiModeTransport, Transport};
 
 // Default UART baud — must match XCTU **BD** on both radios.
 // API mode (AP=2) is used; raise baud after verifying the link end-to-end.
@@ -36,12 +37,7 @@ fn main() {
     println!("Receiver using port: {}", port_name);
 
     let dev = XBeeDevice::new(port_name, BAUD, StopBits::One, DataBits::Eight).unwrap();
-    let (dest64, dest16) = xbee_destination_from_env();
-    eprintln!(
-        "API mode (AP=2): RF dest 64-bit {dest64:#018x}, 16-bit {dest16:#06x} \
-         (set XBEE_DEST64 to the *peer* radio 64-bit address: XCTU SH+SL as 16 hex digits)"
-    );
-    let mut dev = ApiModeTransport::new(dev, dest64, dest16);
+    let mut dev = ApiModeTransport::new(dev, BROADCAST_ADDR_64, UNKNOWN_ADDR_16);
 
     // ---- Identity keys (Ed25519) ----
     let signing_key_path = Path::new("keys/receiver_ed25519.key");
@@ -57,6 +53,8 @@ fn main() {
     // ---- Handshake ----
     // 1) Receive ClientHello
     let client_hello: HandshakeMsg = recv_msg_blocking(&mut dev);
+    dev.set_destination_to_last_rx_source()
+        .expect("No ClientHello source address captured");
 
     // 2) Verify + respond with ServerHello
     let (server_hello, server_eph_secret, client_id_pub, client_eph_pub) =

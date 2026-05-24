@@ -24,6 +24,7 @@ pub const ESCAPE_XOR: u8 = 0x20;
 pub const FRAME_TX_REQUEST: u8 = 0x10;
 pub const FRAME_TX_STATUS_EXT: u8 = 0x8B;
 pub const FRAME_TX_STATUS: u8 = 0x89;
+pub const FRAME_RX_PACKET_64: u8 = 0x80;
 pub const FRAME_RX_PACKET: u8 = 0x90;
 pub const FRAME_MODEM_STATUS: u8 = 0x8A;
 
@@ -39,6 +40,8 @@ pub const MAX_API_BODY: usize = 1024;
 pub const TX_REQUEST_HEADER_LEN: usize = 14;
 /// 0x90: type + src64 + reserved16 + options = 12 bytes before RF payload (SX user guide).
 pub const RX_PACKET_HEADER_LEN: usize = 12;
+/// 0x80: type + src64 + RSSI + options = 11 bytes before RF payload (older 802.15.4 API).
+pub const RX_PACKET_64_HEADER_LEN: usize = 11;
 
 /// Max RF payload bytes we accept in one 0x90 / one `encode_tx_request_ap2` call.
 pub const MAX_RF_PAYLOAD: usize = MAX_API_BODY - TX_REQUEST_HEADER_LEN;
@@ -156,14 +159,20 @@ pub fn encode_tx_request_ap2<'a>(
 /// Result of [`ApiParser::push`]: RF payload from a **0x90 Receive Packet**, or
 /// `None` if the byte completed a non-RF frame (or checksum failure → reset).
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RfPacket {
+    pub source_addr_64: u64,
+    pub source_addr_16: u16,
+    pub payload: heapless::Vec<u8, MAX_API_BODY>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushOutcome {
     /// Still assembling a frame, or consumed an escape byte.
     Continue,
-    /// A full API frame was processed; it was not user RF data (modem status,
-    /// TX status, unknown type, etc.).
+    /// A full API frame was processed; it was not user RF data.
     IgnoredFrame,
-    /// Decoded **0x90** RF payload (copy is owned; safe to use across parser resets).
-    RfPayload(heapless::Vec<u8, MAX_API_BODY>),
+    /// Decoded RF packet (copy is owned; safe to use across parser resets).
+    RfPayload(RfPacket),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,26 +321,40 @@ impl ApiParser {
                     return Ok(PushOutcome::IgnoredFrame);
                 }
 
-                let outcome = Self::extract_rf_payload(frame_data);
+                let outcome = Self::extract_frame(frame_data);
                 self.reset();
-                match outcome {
-                    Some(pl) => Ok(PushOutcome::RfPayload(pl)),
-                    None => Ok(PushOutcome::IgnoredFrame),
-                }
+                Ok(outcome.unwrap_or(PushOutcome::IgnoredFrame))
             }
         }
     }
 
-    fn extract_rf_payload(frame_data: &[u8]) -> Option<heapless::Vec<u8, MAX_API_BODY>> {
+    fn extract_frame(frame_data: &[u8]) -> Option<PushOutcome> {
         if frame_data.is_empty() {
             return None;
         }
         match frame_data[0] {
             FRAME_RX_PACKET if frame_data.len() >= RX_PACKET_HEADER_LEN => {
+                let source_addr_64 = u64::from_be_bytes(frame_data[1..9].try_into().ok()?);
+                let source_addr_16 = u16::from_be_bytes(frame_data[9..11].try_into().ok()?);
                 let mut out = heapless::Vec::new();
                 out.extend_from_slice(&frame_data[RX_PACKET_HEADER_LEN..])
                     .ok()?;
-                Some(out)
+                Some(PushOutcome::RfPayload(RfPacket {
+                    source_addr_64,
+                    source_addr_16,
+                    payload: out,
+                }))
+            }
+            FRAME_RX_PACKET_64 if frame_data.len() >= RX_PACKET_64_HEADER_LEN => {
+                let source_addr_64 = u64::from_be_bytes(frame_data[1..9].try_into().ok()?);
+                let mut out = heapless::Vec::new();
+                out.extend_from_slice(&frame_data[RX_PACKET_64_HEADER_LEN..])
+                    .ok()?;
+                Some(PushOutcome::RfPayload(RfPacket {
+                    source_addr_64,
+                    source_addr_16: UNKNOWN_ADDR_16,
+                    payload: out,
+                }))
             }
             _ => None,
         }
@@ -405,11 +428,19 @@ mod tests {
         let mut got = None;
         for &b in wire.iter() {
             match p.push(b).unwrap() {
-                PushOutcome::RfPayload(v) => got = Some(v),
+                PushOutcome::RfPayload(packet) => got = Some(packet),
                 PushOutcome::Continue | PushOutcome::IgnoredFrame => {}
             }
         }
-        assert_eq!(got.as_ref().map(|v| v.as_slice()), Some(&[0xAB][..]));
+        assert_eq!(
+            got.as_ref().map(|packet| packet.payload.as_slice()),
+            Some(&[0xAB][..])
+        );
+        assert_eq!(
+            got.as_ref().map(|packet| packet.source_addr_64),
+            Some(0x0013_A200_8765_4321)
+        );
+        assert_eq!(got.as_ref().map(|packet| packet.source_addr_16), Some(0xFFFE));
     }
 
     #[test]

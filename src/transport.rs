@@ -61,6 +61,7 @@ pub struct ApiModeTransport {
     parser: ApiParser,
     dest_addr_64: u64,
     dest_addr_16: u16,
+    last_rx_source: Option<(u64, u16)>,
     next_frame_id: u8,
 }
 
@@ -72,8 +73,24 @@ impl ApiModeTransport {
             parser: ApiParser::new(),
             dest_addr_64,
             dest_addr_16,
+            last_rx_source: None,
             next_frame_id: 1,
         }
+    }
+
+    pub fn set_destination(&mut self, dest_addr_64: u64, dest_addr_16: u16) {
+        self.dest_addr_64 = dest_addr_64;
+        self.dest_addr_16 = dest_addr_16;
+    }
+
+    pub fn last_rx_source(&self) -> Option<(u64, u16)> {
+        self.last_rx_source
+    }
+
+    pub fn set_destination_to_last_rx_source(&mut self) -> Option<(u64, u16)> {
+        let (dest_addr_64, dest_addr_16) = self.last_rx_source?;
+        self.set_destination(dest_addr_64, dest_addr_16);
+        Some((dest_addr_64, dest_addr_16))
     }
 
     pub fn into_inner(self) -> XBeeDevice {
@@ -112,15 +129,17 @@ impl Transport for ApiModeTransport {
             }
             for &b in &scratch[..n] {
                 match self.parser.push(b) {
-                    Ok(PushOutcome::RfPayload(pl)) => {
-                        if pl.len() > buf.len() {
+                    Ok(PushOutcome::RfPayload(packet)) => {
+                        self.last_rx_source =
+                            Some((packet.source_addr_64, packet.source_addr_16));
+                        if packet.payload.len() > buf.len() {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 "RF payload larger than recv buffer",
                             ));
                         }
-                        buf[..pl.len()].copy_from_slice(pl.as_slice());
-                        return Ok(pl.len());
+                        buf[..packet.payload.len()].copy_from_slice(packet.payload.as_slice());
+                        return Ok(packet.payload.len());
                     }
                     Ok(PushOutcome::Continue | PushOutcome::IgnoredFrame) => {}
                     Err(crate::api_mode::ApiError::PayloadTooLarge) => {
