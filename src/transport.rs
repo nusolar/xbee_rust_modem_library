@@ -5,12 +5,15 @@
 //! Set the module in **XCTU** to **AP = API 2 (escaped)** and match **BD**
 //! (baud) to the host (e.g. `9600` in the demo binaries).
 //!
-//! **Unicast:** set environment variable **`XBEE_DEST64`** to the peer’s
-//! 64-bit address as **16 hex digits** (same value as XCTU **SH** high +
-//! **SL** low concatenated). Optional **`XBEE_DEST16`** (4 hex digits,
-//! default `FFFE`).
+//! **Unicast:** pass the peer’s 64-bit address (XCTU **SH** + **SL**, 16 hex
+//! digits) on the command line or via environment:
 //!
-//! **Broadcast:** leave `XBEE_DEST64` unset; the library uses
+//! - `--xbee-dest64=0013a20041aeb54e` (also `--XBEE_DEST64=...`, `--xbee-dest64 ...`)
+//! - optional `--xbee-dest16=fffe` (default `FFFE`)
+//!
+//! CLI flags override **`XBEE_DEST64`** / **`XBEE_DEST16`** env vars.
+//!
+//! **Broadcast:** omit both; the library uses
 //! [`crate::api_mode::BROADCAST_ADDR_64`] and [`crate::api_mode::UNKNOWN_ADDR_16`].
 //!
 //! COBS + postcard + AES-GCM payloads are carried inside the **RF data**
@@ -157,10 +160,36 @@ impl Transport for ApiModeTransport {
     }
 }
 
-/// Read destination addresses from **`XBEE_DEST64`** / **`XBEE_DEST16`**.
-///
-/// `XBEE_DEST64`: 16 hex digits, optional `0x` prefix (e.g. peer SH+SL).
-/// `XBEE_DEST16`: 4 hex digits, optional `0x` prefix; defaults to `FFFE`.
+/// Resolve RF destination: **CLI flags first**, then env vars, else broadcast.
+pub fn xbee_destination() -> (u64, u16) {
+    let args: Vec<String> = std::env::args().collect();
+    xbee_destination_from_args(&args)
+}
+
+/// Same as [`xbee_destination`] but uses an explicit argument list (for tests).
+pub fn xbee_destination_from_args(args: &[String]) -> (u64, u16) {
+    let cli = parse_cli_destination(args);
+
+    let d64 = match cli.dest64 {
+        CliDest64::Value(v) => v,
+        CliDest64::Unset => std::env::var("XBEE_DEST64")
+            .ok()
+            .and_then(|s| parse_u64_hex(&s))
+            .unwrap_or(crate::api_mode::BROADCAST_ADDR_64),
+    };
+
+    let d16 = match cli.dest16 {
+        CliDest16::Value(v) => v,
+        CliDest16::Unset => std::env::var("XBEE_DEST16")
+            .ok()
+            .and_then(|s| parse_u16_hex(&s))
+            .unwrap_or(crate::api_mode::UNKNOWN_ADDR_16),
+    };
+
+    (d64, d16)
+}
+
+/// Read destination addresses from **`XBEE_DEST64`** / **`XBEE_DEST16`** only.
 pub fn xbee_destination_from_env() -> (u64, u16) {
     let d64 = std::env::var("XBEE_DEST64")
         .ok()
@@ -173,26 +202,154 @@ pub fn xbee_destination_from_env() -> (u64, u16) {
     (d64, d16)
 }
 
-fn parse_u64_hex(s: &str) -> Option<u64> {
-    let s = s.trim();
-    let s = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .unwrap_or(s);
-    if s.len() != 16 {
-        return None;
-    }
-    u64::from_str_radix(s, 16).ok()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum CliDest64 {
+    #[default]
+    Unset,
+    Value(u64),
 }
 
-fn parse_u16_hex(s: &str) -> Option<u16> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum CliDest16 {
+    #[default]
+    Unset,
+    Value(u16),
+}
+
+#[derive(Debug, Default)]
+struct CliDestination {
+    dest64: CliDest64,
+    dest16: CliDest16,
+}
+
+fn parse_cli_destination(args: &[String]) -> CliDestination {
+    let mut out = CliDestination::default();
+    let mut i = 1;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if let Some((key, value)) = split_long_flag(arg) {
+            apply_cli_flag(&mut out, key, value);
+            i += 1;
+            continue;
+        }
+        if let Some(key) = long_flag_name_only(arg) {
+            i += 1;
+            if i < args.len() {
+                apply_cli_flag(&mut out, key, args[i].as_str());
+            }
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn apply_cli_flag(out: &mut CliDestination, key: &str, value: &str) {
+    match normalize_flag_key(key).as_str() {
+        "xbee_dest64" => match parse_u64_hex(value) {
+            Some(v) => out.dest64 = CliDest64::Value(v),
+            None => {
+                eprintln!(
+                    "error: invalid --xbee-dest64 value {value:?} (need 16 hex digits: XCTU SH+SL)"
+                );
+                std::process::exit(1);
+            }
+        },
+        "xbee_dest16" => match parse_u16_hex(value) {
+            Some(v) => out.dest16 = CliDest16::Value(v),
+            None => {
+                eprintln!("error: invalid --xbee-dest16 value {value:?} (need 4 hex digits)");
+                std::process::exit(1);
+            }
+        },
+        _ => {}
+    }
+}
+
+fn normalize_flag_key(key: &str) -> String {
+    key.trim()
+        .trim_start_matches('-')
+        .replace('-', "_")
+        .to_ascii_lowercase()
+}
+
+fn split_long_flag(arg: &str) -> Option<(&str, &str)> {
+    let arg = arg.trim();
+    if !arg.starts_with("--") {
+        return None;
+    }
+    let rest = arg.get(2..)?;
+    let (key, value) = rest.split_once('=')?;
+    Some((key, value))
+}
+
+fn long_flag_name_only(arg: &str) -> Option<&str> {
+    let arg = arg.trim();
+    if !arg.starts_with("--") || arg.contains('=') {
+        return None;
+    }
+    arg.get(2..)
+}
+
+fn normalize_hex_digits(s: &str) -> String {
     let s = s.trim();
     let s = s
         .strip_prefix("0x")
         .or_else(|| s.strip_prefix("0X"))
         .unwrap_or(s);
-    if s.len() != 4 {
+    s.chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
+}
+
+pub fn parse_u64_hex(s: &str) -> Option<u64> {
+    let digits = normalize_hex_digits(s);
+    if digits.len() != 16 {
         return None;
     }
-    u16::from_str_radix(s, 16).ok()
+    u64::from_str_radix(&digits, 16).ok()
+}
+
+pub fn parse_u16_hex(s: &str) -> Option<u16> {
+    let digits = normalize_hex_digits(s);
+    if digits.len() != 4 {
+        return None;
+    }
+    u16::from_str_radix(&digits, 16).ok()
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn cli_equals_form_overrides_env() {
+        let args = vec![
+            "test_sender".into(),
+            "--XBEE_DEST64=0013a20041aeb54e".into(),
+        ];
+        let (d64, _) = xbee_destination_from_args(&args);
+        assert_eq!(d64, 0x0013a20041aeb54e);
+    }
+
+    #[test]
+    fn cli_space_form() {
+        let args = vec![
+            "test_receiver".into(),
+            "--xbee-dest64".into(),
+            "0013A20041AEB54E".into(),
+        ];
+        let (d64, d16) = xbee_destination_from_args(&args);
+        assert_eq!(d64, 0x0013a20041aeb54e);
+        assert_eq!(d16, 0xFFFE);
+    }
+
+    #[test]
+    fn hex_with_colons() {
+        assert_eq!(
+            parse_u64_hex("00:13:A2:00:41:AE:B5:4E"),
+            Some(0x0013a20041aeb54e)
+        );
+    }
 }

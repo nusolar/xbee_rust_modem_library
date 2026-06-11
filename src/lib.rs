@@ -14,3 +14,10 @@ pub mod secure_packet;
 
 pub mod api_mode;
 pub mod transport;
+
+pub mod link;
+pub mod session;
+
+// Re-exported so consumers don't have to pin a matching ed25519-dalek version
+// just to hold the key types our API takes.
+pub use ed25519_dalek::{SigningKey, VerifyingKey};
