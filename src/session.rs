@@ -272,6 +272,10 @@ fn respond_handshake<T: Transport>(
         return Ok(None);
     };
 
+    // The hello verified, so its source is our authorized peer: aim future
+    // sends (starting with this ServerHello) at it instead of broadcast.
+    transport.lock_destination_to_last_source();
+
     let (server_id_pub, server_eph_pub) = match &server_hello {
         HandshakeMsg::ServerHello {
             server_identity_pub,

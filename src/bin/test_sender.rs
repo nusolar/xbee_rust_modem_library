@@ -11,8 +11,8 @@ use xbee_rust_modem_library::session::SecureSender;
 use xbee_rust_modem_library::transport::{xbee_destination, ApiModeTransport};
 
 // Default UART baud — must match XCTU **BD** on both radios.
-// API mode (AP=2) is used; raise baud after verifying the link end-to-end.
-const BAUD: u32 = 9600;
+// 115200 keeps the UART from bottlenecking the RF link; set BD=7 in XCTU.
+const BAUD: u32 = 115_200;
 const SEND_INTERVAL_MS: u64 = 50;
 const HANDSHAKE_RETRY: Duration = Duration::from_secs(2);
 

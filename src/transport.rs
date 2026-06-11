@@ -31,6 +31,13 @@ use crate::serial::XBeeDevice;
 pub trait Transport {
     fn send(&mut self, data: &[u8]) -> io::Result<()>;
     fn recv(&mut self, buf: &mut [u8]) -> io::Result<usize>;
+
+    /// Point future sends at whoever sent the last received packet, if the
+    /// transport knows source addresses. Lets a receiver start on broadcast
+    /// and lock onto its peer once the handshake arrives. Default: no-op.
+    fn lock_destination_to_last_source(&mut self) -> Option<(u64, u16)> {
+        None
+    }
 }
 
 /// Pass-through transport over [`XBeeDevice`] (transparent UART mode).
@@ -102,6 +109,10 @@ impl ApiModeTransport {
 }
 
 impl Transport for ApiModeTransport {
+    fn lock_destination_to_last_source(&mut self) -> Option<(u64, u16)> {
+        self.set_destination_to_last_rx_source()
+    }
+
     fn send(&mut self, data: &[u8]) -> io::Result<()> {
         let mut buf = [0u8; 4096];
         let frame_id = self.next_frame_id;
